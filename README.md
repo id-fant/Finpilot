@@ -16,8 +16,8 @@ the resulting paper or live orders to Zerodha.
 
 🎬 **Demo:** _90-second walkthrough — `<add Loom URL>` once recorded._
 
-🌐 **Live demo:** ![status](https://img.shields.io/badge/live-not%20yet%20deployed-lightgrey)
-&nbsp;&nbsp;_`<add Railway URL>` once deployed._
+📦 **Run it yourself:** `git clone … && python run.py --demo` — one command,
+no API keys, dashboard opens in 30 seconds. (See [Try it locally](#try-it-locally-in-one-command) below.)
 
 🔒 **Type-checked twice:** ![pyrefly](https://img.shields.io/badge/pyrefly-0%20errors-brightgreen)
 ![pyright](https://img.shields.io/badge/pyright-0%20errors-brightgreen)

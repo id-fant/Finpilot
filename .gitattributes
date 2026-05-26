@@ -1,0 +1,14 @@
+# Force LF line endings for text files in the repo, regardless of OS.
+# Eliminates the "LF will be replaced by CRLF" warning on Windows and
+# keeps diffs sane across contributors on different platforms.
+* text=auto eol=lf
+
+# Treat these as binary — never touch them with line-ending conversion.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.pdf  binary
+*.sqlite3 binary
+*.faiss binary
