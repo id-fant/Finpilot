@@ -21,17 +21,31 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-          # Cache pip downloads across runs — week2/requirements.txt is the key.
+          # Cache pip downloads — key on every requirements file so any edit
+          # invalidates the cache and the lock stays accurate.
           cache: pip
-          cache-dependency-path: week2/requirements.txt
+          cache-dependency-path: |
+            week1/requirements.txt
+            week2/requirements.txt
+            week3/requirements.txt
+            quant/requirements.txt
+            fastapi_spike/requirements.txt
 
-      # Install only what CI actually exercises. pytest + pytest-django are not
-      # in week2/requirements.txt (they're a dev concern); installed inline so
-      # production installs stay lean.
+      # Install every folder's deps. Why all of them: each folder declares
+      # its own requirements.txt, and type-checking week1 (which imports
+      # matplotlib + vectorbt) needs those packages resolvable. Without this
+      # the CI fails on `Cannot find module matplotlib.pyplot` even though
+      # the code itself is clean. pytest + pytest-django + the two type
+      # checkers are dev concerns kept out of the per-folder requirements
+      # so production installs stay lean.
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
+          pip install -r week1/requirements.txt
           pip install -r week2/requirements.txt
+          pip install -r week3/requirements.txt
+          pip install -r quant/requirements.txt
+          pip install -r fastapi_spike/requirements.txt
           pip install pytest pytest-django pyrefly pyright
 
       # ── Type check: every folder, with BOTH checkers. ──────────────────────
