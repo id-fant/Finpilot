@@ -1,5 +1,5 @@
 {
   "venvPath": ".",
   "venv": ".venv",
-  "extraPaths": ["week2", "week3", "week4", "fastapi_spike"]
+  "extraPaths": ["week1", "week2", "week3", "week4", "fastapi_spike"]
 }
