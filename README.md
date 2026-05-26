@@ -14,8 +14,6 @@ the resulting paper or live orders to Zerodha.
   [ ] Results table: fill in once `quant/` + `week1/` backtests have run
 -->
 
-🎬 **Demo:** _90-second walkthrough — `<add Loom URL>` once recorded._
-
 📦 **Run it yourself:** `git clone … && python run.py --demo` — one command,
 no API keys, dashboard opens in 30 seconds. (See [Try it locally](#try-it-locally-in-one-command) below.)
 
