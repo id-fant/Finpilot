@@ -11,7 +11,11 @@ import warnings
 from typing import Any
 
 import pandas as pd
-import vectorbt as _vbt
+# vectorbt is intentionally not installed in CI (numba wheels lag on the very
+# latest Python); the `vbt: Any = _vbt` alias below means callers don't need
+# the real types. Both checkers get suppressions so a clean local install
+# AND a CI-without-vectorbt path both pass.
+import vectorbt as _vbt  # pyrefly: ignore[missing-import]  # pyright: ignore[reportMissingImports]
 import yfinance as yf
 import matplotlib.pyplot as plt
 
