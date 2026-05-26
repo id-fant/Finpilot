@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Cardinal — Financial Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="styles.css?v=finpilot1" />
+</head>
+<body>
+<div id="root"></div>
+
+<!-- React + Babel via CDN. integrity hashes intentionally removed: they break
+     the moment unpkg re-publishes the file (even at the same version), blocking
+     the scripts silently. This is a dev prototype — the safety isn't worth the
+     fragility. Pin a real lockfile if/when you productionise. -->
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" crossorigin></script>
+
+<!-- data-presets="env,react" tells Babel-standalone to apply the React JSX
+     transform plus modern-syntax lowering (optional chaining, ??, etc).
+     Without it some Babel-standalone builds default to no preset and choke
+     on JSX. -->
+<script type="text/babel" data-presets="env,react" src="data.jsx?v=finpilot2"></script>
+<script type="text/babel" data-presets="env,react" src="charts.jsx?v=finpilot2"></script>
+<script type="text/babel" data-presets="env,react" src="components.jsx?v=finpilot2"></script>
+<script type="text/babel" data-presets="env,react" src="views.jsx?v=finpilot2"></script>
+<script type="text/babel" data-presets="env,react" src="explainer.jsx?v=finpilot2"></script>
+<!-- MC panel comes after views.jsx so it can reference PageHead at render time. -->
+<script type="text/babel" data-presets="env,react" src="mc_panel.jsx?v=finpilot2"></script>
+<script type="text/babel" data-presets="env,react" src="app.jsx?v=finpilot2"></script>
+</body>
+</html>

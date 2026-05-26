@@ -1,0 +1,37 @@
+# FinPilot week 4 — local full stack (web + Celery worker + Redis).
+#
+# Run from the repo root:
+#   docker compose -f week4/docker-compose.yml up --build
+#
+# This is the laptop-friendly stack. The production-grade stack (Postgres,
+# nginx, beat, CI) lives in week_3/docker-compose.yml; cloud deploy uses
+# railway.toml. Pick whichever fits the task.
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  web:
+    build:
+      context: ..               # repo root — the Dockerfile copies week_2/
+      dockerfile: week4/Dockerfile
+    command: gunicorn finpilot.wsgi:application --bind 0.0.0.0:8000 --workers 3
+    environment:
+      - DJANGO_DEBUG=0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+    ports:
+      - "8000:8000"
+    depends_on:
+      - redis
+
+  worker:
+    build:
+      context: ..
+      dockerfile: week4/Dockerfile
+    command: celery -A finpilot worker --loglevel=info
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+    depends_on:
+      - redis

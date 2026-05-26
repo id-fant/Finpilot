@@ -1,0 +1,143 @@
+"""Week 3 — headline sources for the sentiment pipeline.
+
+Returns `list[str]` — the exact shape `llm.sentiment.stock_sentiment` and
+`llm.explainer.explain_signal` expect, so this drops in with no adapter.
+
+Two free sources, combined and de-duplicated:
+  1. yfinance.Ticker(symbol).news — per-ticker, NSE-aware via the .NS suffix.
+  2. Zerodha Pulse RSS            — broad Indian-finance aggregator; filtered
+                                    to headlines mentioning the symbol stem.
+
+WHY combine: yfinance is per-stock but flaky and sparse; Pulse is reliable and
+dense but unfiltered. Together you get coverage without the noise of a
+firehose. Either source can fail silently — `headlines_for` never raises, so a
+network blip cannot kill the surrounding explain/sentiment call.
+
+Run (from week3/):  python -m llm.news RELIANCE.NS
+"""
+from __future__ import annotations
+
+import logging
+import sys
+from typing import Any
+
+logger = logging.getLogger(__name__)
+
+# feedparser is the ONLY new dependency; guarded so this module imports cleanly
+# even without it (the yfinance path still works on its own).
+# `Any`-typed so the use sites below are not flagged on `feedparser = None` —
+# see llm/__init__.py for the same pattern.
+feedparser: Any
+try:
+    import feedparser
+    _HAS_FEEDPARSER = True
+except ImportError:
+    feedparser = None
+    _HAS_FEEDPARSER = False
+
+# yfinance is already a project dep (week1 + week2 + week4 use it).
+yf: Any
+try:
+    import yfinance as yf
+    _HAS_YF = True
+except ImportError:
+    yf = None
+    _HAS_YF = False
+
+PULSE_FEED = "https://pulse.zerodha.com/feed.php"
+MAX_PULSE_SCAN = 200  # entries to look through before stopping the filter
+
+
+def _yfinance_headlines(symbol: str, limit: int) -> list[str]:
+    """Per-ticker news titles from yfinance. Returns at most `limit` titles."""
+    if not _HAS_YF:
+        return []
+    try:
+        # pyrefly: ignore[missing-attribute] -- guarded by _HAS_YF above
+        items = yf.Ticker(symbol).news or []
+    except Exception as e:  # noqa: BLE001 - yfinance raises a lot of error types
+        logger.warning("news: yfinance.news(%s) failed — %s", symbol, e)
+        return []
+
+    out: list[str] = []
+    for item in items[:limit]:
+        # yfinance's payload shape shifted across versions — handle both:
+        # newer responses nest under 'content', older have title at top level.
+        title = (
+            (item.get("content") or {}).get("title")
+            or item.get("title")
+            or ""
+        ).strip()
+        if title:
+            out.append(title)
+    return out
+
+
+def _pulse_headlines(symbol_stem: str, limit: int, seen: set[str]) -> list[str]:
+    """Zerodha Pulse RSS, filtered to headlines containing `symbol_stem`."""
+    if not _HAS_FEEDPARSER:
+        return []
+    try:
+        # pyrefly: ignore[missing-attribute] -- guarded by _HAS_FEEDPARSER above
+        feed = feedparser.parse(PULSE_FEED)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("news: Pulse RSS fetch failed — %s", e)
+        return []
+
+    needle = symbol_stem.upper()
+    out: list[str] = []
+    for entry in feed.entries[:MAX_PULSE_SCAN]:
+        title = (entry.get("title") or "").strip()
+        if not title or title in seen:
+            continue
+        if needle in title.upper():
+            out.append(title)
+            if len(out) >= limit:
+                break
+    return out
+
+
+def headlines_for(symbol: str, *, limit: int = 15) -> list[str]:
+    """Recent headlines for `symbol`, de-duplicated, newest first.
+
+    Args:
+        symbol: NSE ticker, e.g. "RELIANCE.NS". The Pulse filter strips the
+            ".NS"/".BO" suffix to match bare stems in headlines.
+        limit: cap on the returned list.
+
+    Returns:
+        A list of plain headline strings. Empty if both sources are unavailable —
+        callers must treat empty as "no news supplied", not as an error.
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+
+    # 1. yfinance per-ticker.
+    for title in _yfinance_headlines(symbol, limit):
+        if title not in seen:
+            seen.add(title)
+            out.append(title)
+            if len(out) >= limit:
+                break
+
+    # 2. Pulse — only if we still need more after yfinance.
+    if len(out) < limit:
+        stem = symbol.split(".")[0]
+        for title in _pulse_headlines(stem, limit - len(out), seen):
+            if title not in seen:
+                seen.add(title)
+                out.append(title)
+                if len(out) >= limit:
+                    break
+
+    logger.info("headlines_for(%s): %d headline(s) (yfinance + Pulse)",
+                symbol, len(out))
+    return out
+
+
+if __name__ == "__main__":  # quick demo: python -m llm.news RELIANCE.NS
+    logging.basicConfig(level=logging.INFO,
+                        format="[%(levelname)s] %(name)s: %(message)s")
+    sym = sys.argv[1] if len(sys.argv) > 1 else "RELIANCE.NS"
+    for i, h in enumerate(headlines_for(sym, limit=10), 1):
+        print(f"{i:2d}. {h}")

@@ -1,0 +1,9 @@
+# FinPilot - quant track dependencies
+# Install:  pip install -r requirements.txt
+
+yfinance>=0.2.40
+pandas>=2.2.3
+numpy>=2.1,<3
+scipy>=1.13          # constrained optimiser (max-Sharpe weights)
+statsmodels>=0.14    # ADF test, cointegration, OLS regression
+matplotlib>=3.9

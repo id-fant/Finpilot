@@ -1,0 +1,35 @@
+# FinPilot Week 2 — Python dependencies.
+#
+# WHY pinned (12-factor "explicit dependencies"): an exact version per package
+# means the build is reproducible — the same code runs identically on every
+# machine and in CI/prod. The trade-off is that pins must be refreshed when the
+# Python runtime moves on.
+#
+# These versions are chosen for Python 3.13: each ships a prebuilt wheel, so
+# `pip install` never has to compile from source. (The original 2.2.2-era pins
+# predated 3.13 and forced a from-source pandas build that fails without a C
+# toolchain — see HANDOFF.md.)
+
+# ── Web framework + API ──
+Django==5.1.4
+djangorestframework==3.15.2
+django-cors-headers==4.6.0
+
+# ── Task queue (worker + beat; optional for the read-only API) ──
+celery==5.4.0
+redis==5.2.1
+django-celery-beat==2.7.0
+
+# ── Config + database ──
+python-dotenv==1.0.1
+psycopg2-binary==2.9.10      # only needed when DATABASE_URL points at Postgres
+dj-database-url==2.3.0
+
+# ── Market data + analysis ──
+yfinance==0.2.51
+pandas==2.2.3
+
+# NOTE: pandas-ta is intentionally NOT listed. core/strategy.py implements RSI /
+# MACD / Bollinger Bands by hand (its column names are stable across versions),
+# so pandas-ta was never imported — and its 0.3.14b0 release breaks on numpy 2.x
+# (`from numpy import NaN`). An unused, broken dependency is just install risk.

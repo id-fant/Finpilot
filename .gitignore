@@ -1,0 +1,95 @@
+# ── Personal study notes (kept local, not committed) ──
+LEARNINGS.md
+interview_prep/
+HANDOFF.md
+
+# ── Private working-fork planning docs (companions to LEARNINGS #71's
+#    "public portfolio + private fork" pattern). Read them in this order:
+#      profitable.md           = big picture: 5 levers across all axes
+#      strategy.md             = why engineering isn't the bottleneck
+#      private_branch_features.md = the concrete build queue ──
+profitable.md
+strategy.md
+private_branch_features.md
+
+# ── Personal git workflow notes (kept local) ──
+GITHUB_PUSH_GUIDE.txt
+
+# ── Build-process meta document (mentions the build assistant; keep private,
+#    the public-facing equivalent is finpilot_master_guide.md) ──
+finpilot_claude_code_spec.md
+
+# ── Claude Code local state (settings, scheduled tasks, session metadata) ──
+.claude/
+
+# ── Old dashboard prototype (replaced by week4/frontend/ Cardinal React;
+#    referenced in HANDOFF §5.11) ──
+dashboard/
+
+# ── Archived old structure (kept locally for reference, not committed) ──
+_archive/
+
+# ── LLM layer: caches, vector indexes, reports ──
+*.faiss
+*.index
+faiss_index/
+.cache/
+evaluation_report.json
+
+# ── Python ──
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ── Virtual environments ──
+.venv/
+venv/
+env/
+ENV/
+
+# ── Django ──
+*.sqlite3
+*.sqlite3-journal
+/staticfiles/
+/media/
+local_settings.py
+
+# ── Environment / secrets ──
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# ── Celery ──
+celerybeat-schedule
+celerybeat.pid
+
+# ── Generated analysis artifacts ──
+# Blanket-exclude charts and CSVs produced by running the scripts, then
+# whitelist the specific files the README/portfolio depends on. Order
+# matters: the `!` exceptions must come AFTER the `*.png` / `*.csv` rules.
+*.png
+*.csv
+!week1/nifty_comparison.csv
+!docs/screenshots/*.png
+!docs/results/*.csv
+
+# ── IDE / OS ──
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# ── Logs ──
+*.log
+logs/

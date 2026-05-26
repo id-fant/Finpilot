@@ -1,0 +1,18 @@
+# FinPilot - Week 3 (LLM layer) dependencies
+#
+# HEAVY-DEPENDENCY NOTE (the build spec asks to flag these):
+#   faiss-cpu ships a compiled native library (~30 MB). pip installs a prebuilt
+#   wheel for CPython 3.9-3.13 on Windows/macOS/Linux, so it normally installs
+#   cleanly. If it does NOT, rag.py has a NumPy fallback and runs fine without
+#   it — you can simply drop the faiss-cpu line.
+#
+# The `ragas` package is intentionally NOT used: it pulls a large LangChain
+# dependency tree. evaluation.py implements the RAGAS metrics directly with
+# Gemini-as-judge instead — lighter, and more transparent.
+
+google-genai==1.68.0         # Gemini API — chat completions + embeddings (current SDK)
+faiss-cpu==1.9.0             # vector similarity index for RAG (optional — see note)
+pypdf==5.1.0                 # extract text from earnings-call PDFs
+feedparser==6.0.11           # Zerodha Pulse RSS (news headlines for sentiment)
+numpy==1.26.4                # vector maths (and the faiss fallback)
+python-dotenv==1.0.1         # load GEMINI_API_KEY from .env

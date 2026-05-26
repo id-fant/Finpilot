@@ -1,0 +1,7 @@
+Symbol,Total_Return_%,Annualised_Vol_%,Sharpe,Max_Drawdown_%,Avg_Volume_M,Above_SMA200
+RELIANCE.NS,2.7,20.1,-0.091,-18.07,12.46,True
+WIPRO.NS,-14.2,23.7,-0.811,-29.45,12.0,False
+ICICIBANK.NS,-11.8,18.4,-0.949,-18.37,12.17,False
+INFY.NS,-19.6,26.2,-0.96,-31.82,9.27,False
+HDFCBANK.NS,-19.2,18.7,-1.408,-27.78,25.35,False
+TCS.NS,-27.3,22.3,-1.625,-32.68,3.09,False

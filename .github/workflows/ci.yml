@@ -1,0 +1,78 @@
+name: ci
+
+# Run on every push and pull request to main — small project, fast pipeline,
+# no point gating only on push. The actual cost is the runner minute, which
+# is free for public repos.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  type-check-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10  # the suite is sub-second; anything past 10 min = something hung
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          # Cache pip downloads across runs — week2/requirements.txt is the key.
+          cache: pip
+          cache-dependency-path: week2/requirements.txt
+
+      # Install only what CI actually exercises. pytest + pytest-django are not
+      # in week2/requirements.txt (they're a dev concern); installed inline so
+      # production installs stay lean.
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r week2/requirements.txt
+          pip install pytest pytest-django pyrefly pyright
+
+      # ── Type check: every folder, with BOTH checkers. ──────────────────────
+      # 0 errors is the gate from each; suppressions are allowed (annotated).
+      # WHY two checkers: pyrefly and pyright disagree on pandas narrowing —
+      # pyrefly accepts what pyright rejects on `df["col"]` (Series|DataFrame
+      # union) and vice versa on `cast` redundancy. Running both catches both
+      # families of stub-strictness issues that the IDE (Pylance/Pyright) sees.
+      - name: Type check (pyrefly) — every folder
+        run: |
+          for d in week1 week2 week3 week4 quant fastapi_spike; do
+            echo "::group::pyrefly $d"
+            pyrefly check "$d"
+            echo "::endgroup::"
+          done
+
+      - name: Type check (pyright) — every folder
+        run: |
+          for d in week1 week2 week3 week4 quant fastapi_spike; do
+            echo "::group::pyright $d"
+            pyright "$d"
+            echo "::endgroup::"
+          done
+
+      # ── Django sanity: settings load, models validate, migrations apply. ────
+      - name: Django system check
+        working-directory: week2
+        run: python manage.py check
+
+      - name: Django migration check (no pending migrations)
+        working-directory: week2
+        # --check exits non-zero if a makemigrations is needed — catches forgotten
+        # schema changes BEFORE they cause a runtime error in prod.
+        run: python manage.py makemigrations --check --dry-run
+
+      # ── Pytest: engine unit tests + seed_demo integration tests. ────────────
+      - name: Run pytest
+        working-directory: week2
+        run: pytest
+
+      # ── Smoke test: full pipeline on synthetic data, no network. ────────────
+      - name: Offline smoke test
+        working-directory: week2
+        run: python smoke_test.py --offline

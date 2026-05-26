@@ -1,0 +1,9 @@
+# FinPilot - FastAPI spike (Returns Assistant) dependencies
+# Install:  pip install -r requirements.txt
+
+fastapi>=0.115
+uvicorn[standard]>=0.30
+pydantic>=2.9
+yfinance>=0.2.40
+pandas>=2.2.3
+numpy>=2.1,<3

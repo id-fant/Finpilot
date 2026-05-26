@@ -1,0 +1,20 @@
+# FinPilot — Railway deploy configuration.
+#
+# Railway (railway.app) is a PaaS: it builds the image, runs `startCommand`,
+# injects a $PORT, and terminates TLS for you — no nginx to manage.
+#
+# Deploy:  install the Railway CLI, then  `railway up`  from the repo root.
+# Set DJANGO_SECRET_KEY, DJANGO_ALLOWED_HOSTS and any broker keys as Railway
+# environment variables — never commit them.
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "week4/Dockerfile"
+
+[deploy]
+# $PORT is provided by Railway at runtime.
+startCommand = "gunicorn finpilot.wsgi:application --bind 0.0.0.0:$PORT --workers 3"
+healthcheckPath = "/api/signals/stocks/"
+healthcheckTimeout = 30
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3
