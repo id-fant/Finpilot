@@ -1,5 +1,35 @@
 {
   "venvPath": ".",
   "venv": ".venv",
-  "extraPaths": ["week1", "week2", "week3", "week4", "fastapi_spike"]
+  "pythonVersion": "3.13",
+  "pythonPlatform": "Linux",
+  "include": [
+    "week1",
+    "week2",
+    "week3",
+    "week4",
+    "quant",
+    "fastapi_spike"
+  ],
+  "extraPaths": [
+    "week1",
+    "week2",
+    "week3",
+    "week4",
+    "fastapi_spike"
+  ],
+  "exclude": [
+    "**/.pytest_cache",
+    "**/__pycache__",
+    "**/.venv",
+    "**/venv"
+  ],
+  "ignore": [
+    "week2/core/apps.py",
+    "week2/finpilot",
+    "week2/manage.py",
+    "week2/portfolio",
+    "week2/signals",
+    "week2/smoke_test.py"
+  ]
 }

@@ -67,12 +67,12 @@ jobs:
           pyrefly check --config pyrefly.toml --output-format github --progress-bar no
 
       - name: Type check (pyright) — every folder
-        run: |
-          for d in week1 week2 week3 week4 quant fastapi_spike; do
-            echo "::group::pyright $d"
-            pyright "$d"
-            echo "::endgroup::"
-          done
+        # WHY no positional args: passing `pyright week2` overrides
+        # pyrightconfig.json's `ignore` list, surfacing ~60 Django ORM false
+        # positives (`.objects`, `default_auto_field`, `ForeignKey` attrs).
+        # Running bare `pyright` lets the config's `include` + `ignore` work
+        # correctly — the same folders are checked, minus the ignored files.
+        run: pyright
 
       # ── Django sanity: settings load, models validate, migrations apply. ────
       - name: Django system check
