@@ -30,6 +30,8 @@
     "week2/manage.py",
     "week2/portfolio",
     "week2/signals",
-    "week2/smoke_test.py"
+    "week2/smoke_test.py",
+    "week4/broker/kite_client.py",
+    "week4/scripts/kite_login.py"
   ]
 }
