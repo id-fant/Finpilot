@@ -62,18 +62,9 @@ jobs:
       # families of stub-strictness issues that the IDE (Pylance/Pyright) sees.
       - name: Type check (pyrefly) — every folder
         run: |
-          # --replace-imports-with-any silences the missing-import for the
-          # two optional heavies we deliberately did NOT install above.
-          # Same result as the inline `# pyrefly: ignore[missing-import]`
-          # comments, just enforced at the command line so a future stub
-          # bug or import error in those packages doesn't break CI either.
-          for d in week1 week2 week3 week4 quant fastapi_spike; do
-            echo "::group::pyrefly $d"
-            pyrefly check "$d" \
-              --replace-imports-with-any vectorbt \
-              --replace-imports-with-any faiss
-            echo "::endgroup::"
-          done
+          # Keep Pyrefly in project mode so pyrefly.toml owns includes,
+          # excludes, search paths, and optional heavy import handling.
+          pyrefly check --config pyrefly.toml --output-format github --progress-bar no
 
       - name: Type check (pyright) — every folder
         run: |

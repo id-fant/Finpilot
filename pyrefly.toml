@@ -1,0 +1,43 @@
+# Keep the GitHub Actions Pyrefly step config-driven instead of passing each
+# top-level folder as a CLI argument. Passing folders switches Pyrefly into
+# single-file mode, where project-excludes from config are ignored.
+project-includes = [
+    "week1",
+    "week2/core",
+    "week2/finpilot",
+    "week2/portfolio",
+    "week2/signals",
+    "week2/manage.py",
+    "week2/smoke_test.py",
+    "week3",
+    "week4",
+    "quant",
+    "fastapi_spike",
+    "scripts",
+    "run.py",
+]
+
+project-excludes = [
+    "**/.pytest_cache",
+    "**/.pytest_cache/**",
+    "**/__pycache__",
+    "**/__pycache__/**",
+    "**/.venv",
+    "**/.venv/**",
+    "**/venv",
+    "**/venv/**",
+]
+
+search-path = [
+    ".",
+    "week1",
+    "week2",
+    "week3",
+    "week4",
+    "week4/broker",
+    "fastapi_spike",
+]
+
+python-version = "3.13"
+python-platform = "linux"
+replace-imports-with-any = ["vectorbt", "faiss"]
