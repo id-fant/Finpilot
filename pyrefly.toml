@@ -40,4 +40,32 @@ search-path = [
 
 python-version = "3.13"
 python-platform = "linux"
-replace-imports-with-any = ["vectorbt", "faiss"]
+replace-imports-with-any = [
+    "vectorbt",
+    "faiss",
+    # Django's ORM managers/admin/app config attributes are added dynamically.
+    # Pyright remains the stricter checker for the Django surface; Pyrefly still
+    # checks our non-framework code without reporting stub-model false positives.
+    "django",
+    "django.apps",
+    "django.conf",
+    "django.contrib",
+    "django.core",
+    "django.core.cache",
+    "django.core.management",
+    "django.core.management.base",
+    "django.core.wsgi",
+    "django.db",
+    "django.db.models",
+    "django.db.models.deletion",
+    "django.db.utils",
+    "django.urls",
+    "rest_framework",
+    "rest_framework.generics",
+    "rest_framework.response",
+    "rest_framework.views",
+    "celery",
+    "celery.schedules",
+    # Optional live-trading SDK; CI intentionally does not install it.
+    "kiteconnect",
+]
