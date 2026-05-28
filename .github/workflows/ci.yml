@@ -90,6 +90,10 @@ jobs:
         working-directory: week2
         run: pytest
 
+      - name: Apply Django migrations
+        working-directory: week2
+        run: python manage.py migrate --noinput
+
       # ── Smoke test: full pipeline on synthetic data, no network. ────────────
       - name: Offline smoke test
         working-directory: week2
