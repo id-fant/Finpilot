@@ -52,7 +52,14 @@ jobs:
           pip install -r /tmp/w3.txt
           pip install -r quant/requirements.txt
           pip install -r fastapi_spike/requirements.txt
-          pip install pytest pytest-django pyrefly pyright
+          # Dev-only: test runner + both type checkers + Django type stubs.
+          # WHY the stubs matter: without django-types / djangorestframework-types
+          # the checkers see raw Django (no `.objects`, no typed cache/generics)
+          # and emit ~60 false positives — the exact errors that previously got
+          # papered over by ignoring whole apps. Installing them lets pyright
+          # check the real code, with only the per-line stub suppressions left.
+          pip install pytest pytest-django pyrefly pyright \
+            django-types djangorestframework-types django-stubs-ext
 
       # ── Type check: every folder, with BOTH checkers. ──────────────────────
       # 0 errors is the gate from each; suppressions are allowed (annotated).

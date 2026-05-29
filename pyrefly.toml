@@ -40,34 +40,17 @@ search-path = [
 
 python-version = "3.13"
 python-platform = "linux"
+# Only the genuinely-uninstalled packages get replaced with Any. The CI
+# install step deliberately skips these three:
+#   vectorbt    — pulls numba, whose wheels lag on the newest Python
+#   faiss       — ships native code; rag.py has a NumPy fallback anyway
+#   kiteconnect — optional live-trading SDK, not needed to type-check
+# Django / DRF / Celery are NOT listed here: their stubs (django-types,
+# djangorestframework-types, django-stubs-ext) ARE installed in CI, so
+# Pyrefly checks the framework surface for real. The few remaining stub
+# false-positives are handled by per-line `# pyrefly: ignore[...]` comments.
 replace-imports-with-any = [
     "vectorbt",
     "faiss",
-    # Django's ORM managers/admin/app config attributes are added dynamically.
-    # Pyright remains the stricter checker for the Django surface; Pyrefly still
-    # checks our non-framework code without reporting stub-model false positives.
-    "django",
-    "django.apps",
-    "django.conf",
-    "django.contrib",
-    "django.contrib.admin",
-    "django.core",
-    "django.core.cache",
-    "django.core.management",
-    "django.core.management.base",
-    "django.core.wsgi",
-    "django.db",
-    "django.db.models",
-    "django.db.models.deletion",
-    "django.db.transaction",
-    "django.db.utils",
-    "django.urls",
-    "rest_framework",
-    "rest_framework.generics",
-    "rest_framework.response",
-    "rest_framework.views",
-    "celery",
-    "celery.schedules",
-    # Optional live-trading SDK; CI intentionally does not install it.
     "kiteconnect",
 ]
