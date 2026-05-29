@@ -161,13 +161,17 @@ CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
 from celery.schedules import crontab  # noqa: E402 — kept next to the schedule
 
 CELERY_BEAT_SCHEDULE = {
+    # crontab fields are cron-style strings ("9", "*/2", "mon-fri") — celery's
+    # own API and type stubs treat hour/minute as str, matching day_of_week
+    # below. Passing strings (not ints) keeps all three fields consistent and
+    # type-clean with no suppression needed.
     "daily-signals": {
         "task": "signals.generate_daily_signals",
-        "schedule": crontab(hour=9, minute=5, day_of_week="mon-fri"),
+        "schedule": crontab(hour="9", minute="5", day_of_week="mon-fri"),
     },
     "execute-signal-orders": {
         "task": "portfolio.execute_signal_orders",
-        "schedule": crontab(hour=9, minute=20, day_of_week="mon-fri"),
+        "schedule": crontab(hour="9", minute="20", day_of_week="mon-fri"),
     },
 }
 
