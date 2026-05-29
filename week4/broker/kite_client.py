@@ -26,7 +26,7 @@ from typing import Any
 # same pattern. The runtime `_HAS_KITE` guard is the real safety check.
 KiteConnect: Any
 try:
-    from kiteconnect import KiteConnect  # pyrefly: ignore[missing-import]
+    from kiteconnect import KiteConnect  # pyrefly: ignore[missing-import]  # pyright: ignore[reportMissingImports]
     _HAS_KITE = True
 except ImportError:  # SDK optional — PaperBroker needs nothing extra
     KiteConnect = None

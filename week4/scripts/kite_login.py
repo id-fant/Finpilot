@@ -83,7 +83,7 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
-        from kiteconnect import KiteConnect
+        from kiteconnect import KiteConnect  # pyrefly: ignore[missing-import]  # pyright: ignore[reportMissingImports]
     except ImportError:
         print("kiteconnect is not installed.\n"
               "  Activate the venv and run:  pip install kiteconnect",
