@@ -13,6 +13,7 @@ Run:  python paper_trade.py     (a short self-contained demo)
 """
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -33,6 +34,14 @@ class Trade:
 class PaperBroker:
     """Simulated broker. Interface mirrors KiteClient so they're swappable."""
 
+    # WHY an LTP cache: a batch run touches the same symbols repeatedly —
+    # OrderManager risk-checks call get_positions() per signal, and each of
+    # those marks every holding to market. Without a cache that is
+    # O(signals × positions) yfinance round-trips; with it, one fetch per
+    # symbol per TTL window. 60s is far fresher than the daily-bar data
+    # yfinance actually serves, so nothing meaningful is lost.
+    LTP_CACHE_TTL = 60.0  # seconds
+
     def __init__(self, starting_cash: float = 1_000_000.0, cost_pct: float = 0.0006):
         # cost_pct rolls brokerage + taxes + slippage into one per-trade haircut
         # (~0.06% is a realistic round-figure for Zerodha-style delivery costs).
@@ -42,15 +51,27 @@ class PaperBroker:
         self.positions: dict[str, dict] = {}  # symbol -> {quantity, avg_price}
         self.trades: list[Trade] = []
         self.realised_pnl = 0.0
+        self._ltp_cache: dict[str, tuple[float, float]] = {}  # symbol -> (price, fetched_at)
 
     # ── Market data ──────────────────────────────────────────────────────────
 
     def get_ltp(self, symbol: str) -> float:
-        """Last traded price. yfinance stands in for a real market-data feed."""
+        """Last traded price. yfinance stands in for a real market-data feed.
+
+        Cached for LTP_CACHE_TTL seconds per symbol — the network fetch is the
+        slowest thing this class does, and callers (get_positions, summary,
+        OrderManager risk gates) ask for the same prices many times per run.
+        """
+        cached = self._ltp_cache.get(symbol)
+        if cached is not None and time.monotonic() - cached[1] < self.LTP_CACHE_TTL:
+            return cached[0]
+
         df = yf.Ticker(symbol).history(period="1d")
         if df.empty:
             raise RuntimeError(f"No price available for {symbol}")
-        return round(float(df["Close"].iloc[-1]), 2)
+        price = round(float(df["Close"].iloc[-1]), 2)
+        self._ltp_cache[symbol] = (price, time.monotonic())
+        return price
 
     # ── Orders ───────────────────────────────────────────────────────────────
 

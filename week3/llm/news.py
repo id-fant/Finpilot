@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import time
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -46,6 +47,25 @@ except ImportError:
 
 PULSE_FEED = "https://pulse.zerodha.com/feed.php"
 MAX_PULSE_SCAN = 200  # entries to look through before stopping the filter
+
+# WHY cache the Pulse feed: it is ONE aggregator feed, not per-symbol — only
+# the client-side filter differs. A batch run (8 tracked stocks) would
+# otherwise download + parse the identical feed 8 times. 10 minutes is well
+# inside the freshness needs of a once-a-day signal run.
+_PULSE_CACHE_TTL = 600.0  # seconds
+_pulse_cache: tuple[float, Any] | None = None  # (fetched_at, parsed feed)
+
+
+def _fetch_pulse_feed() -> Any:
+    """Parsed Pulse RSS feed, cached across symbols for _PULSE_CACHE_TTL."""
+    global _pulse_cache
+    now = time.monotonic()
+    if _pulse_cache is not None and now - _pulse_cache[0] < _PULSE_CACHE_TTL:
+        return _pulse_cache[1]
+    # pyrefly: ignore[missing-attribute] -- guarded by _HAS_FEEDPARSER at call site
+    feed = feedparser.parse(PULSE_FEED)
+    _pulse_cache = (now, feed)
+    return feed
 
 
 def _yfinance_headlines(symbol: str, limit: int) -> list[str]:
@@ -78,8 +98,7 @@ def _pulse_headlines(symbol_stem: str, limit: int, seen: set[str]) -> list[str]:
     if not _HAS_FEEDPARSER:
         return []
     try:
-        # pyrefly: ignore[missing-attribute] -- guarded by _HAS_FEEDPARSER above
-        feed = feedparser.parse(PULSE_FEED)
+        feed = _fetch_pulse_feed()
     except Exception as e:  # noqa: BLE001
         logger.warning("news: Pulse RSS fetch failed — %s", e)
         return []

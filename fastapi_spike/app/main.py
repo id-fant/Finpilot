@@ -69,7 +69,8 @@ def compute_metrics(symbol: str, period: str) -> StockMetrics:
     sharpe = (ann_return - RISK_FREE_RATE) / ann_vol if ann_vol else 0.0
 
     wealth = (1 + returns).cumprod()
-    max_dd = ((wealth - wealth.cummax()) / wealth.cummax()).min()
+    peak = wealth.cummax()  # computed once — it feeds both sides of the ratio
+    max_dd = ((wealth - peak) / peak).min()
 
     return StockMetrics(
         symbol=symbol.upper(),

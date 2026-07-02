@@ -21,6 +21,19 @@ from .serializers import SignalSerializer, StockSerializer
 logger = logging.getLogger(__name__)
 
 
+def _result_count(response) -> int:
+    """Total rows in a (possibly paginated) DRF list response.
+
+    WHY read the count from the response instead of `qs.count()` inside
+    get_queryset: the paginator ALREADY runs a COUNT query to build the
+    paginated envelope — counting again in get_queryset doubles the DB
+    round-trips of every list request just to feed a log line. This helper
+    reuses the number the paginator computed for free.
+    """
+    data = response.data
+    return data.get("count", 0) if isinstance(data, dict) else len(data)
+
+
 class StockListView(generics.ListAPIView):
     """GET /api/signals/stocks/ — every stock under coverage."""
 
@@ -34,9 +47,12 @@ class StockListView(generics.ListAPIView):
     # `# pyrefly: ignore[bad-override]` documents that this is a stub limitation,
     # not a real bug — re-evaluate if djangorestframework-types fixes the generic.
     def get_queryset(self) -> QuerySet[Stock]:  # pyrefly: ignore[bad-override]
-        qs = Stock.objects.all()
-        logger.info("StockListView: returning %d stock(s)", qs.count())
-        return qs
+        return Stock.objects.all()
+
+    def list(self, request, *args, **kwargs):
+        response = super().list(request, *args, **kwargs)
+        logger.info("StockListView: returning %d stock(s)", _result_count(response))
+        return response
 
 
 class LatestSignalsView(generics.ListAPIView):
@@ -61,10 +77,15 @@ class LatestSignalsView(generics.ListAPIView):
                             "has generate_daily_signals run?")
             return Signal.objects.none()
 
-        qs = Signal.objects.filter(date=latest_date).select_related("stock")
-        logger.info("LatestSignalsView: %d signal(s) for latest date %s",
-                    qs.count(), latest_date)
-        return qs
+        logger.info("LatestSignalsView: serving signals for latest date %s",
+                    latest_date)
+        return Signal.objects.filter(date=latest_date).select_related("stock")
+
+    def list(self, request, *args, **kwargs):
+        response = super().list(request, *args, **kwargs)
+        logger.info("LatestSignalsView: %d signal(s) returned",
+                    _result_count(response))
+        return response
 
 
 class SignalHistoryView(generics.ListAPIView):
@@ -73,12 +94,15 @@ class SignalHistoryView(generics.ListAPIView):
     serializer_class = SignalSerializer
 
     def get_queryset(self) -> QuerySet[Signal]:  # pyrefly: ignore[bad-override]
-        symbol = self.kwargs["symbol"]
-        qs = (
-            Signal.objects.filter(stock__symbol=symbol)
+        return (
+            Signal.objects.filter(stock__symbol=self.kwargs["symbol"])
             .select_related("stock")
         )
-        count = qs.count()
+
+    def list(self, request, *args, **kwargs):
+        response = super().list(request, *args, **kwargs)
+        count = _result_count(response)
+        symbol = self.kwargs["symbol"]
         if count == 0:
             # WARNING: distinguishes "unknown ticker" / "no signals yet" from a
             # real error — a common source of confused "why is it empty?" reports.
@@ -86,7 +110,7 @@ class SignalHistoryView(generics.ListAPIView):
                             "unknown ticker, or none generated for it yet", symbol)
         else:
             logger.info("SignalHistoryView: %d signal(s) for %s", count, symbol)
-        return qs
+        return response
 
 
 class ExplainSignalView(APIView):

@@ -105,15 +105,20 @@ def execute_signal_orders(target_date: str | None = None) -> dict:
 
     placed = skipped = rejected = failed = 0
 
+    # WHY one dedup query up front, not one .exists() per signal: re-running
+    # the task for the same date must not double-fire orders — but checking
+    # each signal individually costs N queries. Loading the already-ordered
+    # (signal_id, side) pairs into a set costs ONE query and makes each check
+    # a hash lookup. Same idempotency guarantee (LEARNINGS #48), N-1 fewer
+    # round-trips.
+    existing_orders = set(
+        Order.objects
+        .filter(signal__in=candidates)
+        .values_list("signal_id", "side")
+    )
+
     for signal in candidates:
-        # WHY this dedup check: re-running the task for the same date must not
-        # double-fire orders. Pair it with the natural unique-ish key
-        # (signal, side) — re-runs become no-ops, which is exactly what
-        # idempotency means in this context (LEARNINGS #48).
-        already = Order.objects.filter(
-            signal=signal, side=signal.signal_type,
-        ).exists()
-        if already:
+        if (signal.pk, signal.signal_type) in existing_orders:
             logger.debug("execute_signal_orders: %s already has an order — skipping",
                          signal.stock.symbol)
             skipped += 1

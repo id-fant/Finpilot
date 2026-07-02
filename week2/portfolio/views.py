@@ -2,6 +2,7 @@
 import csv
 import logging
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 from django.conf import settings
@@ -61,9 +62,20 @@ class OrderHistoryView(generics.ListAPIView):
     def get_queryset(self) -> QuerySet[Order]:  # pyrefly: ignore[bad-override]
         # select_related("stock") joins the Stock in the same query — without
         # it, serialising N orders would fire N extra queries (the N+1 problem).
-        qs = Order.objects.select_related("stock").all()
-        logger.info("OrderHistoryView: returning %d order(s)", qs.count())
-        return qs
+        return Order.objects.select_related("stock").all()
+
+    def list(self, request, *args, **kwargs):
+        # WHY log here, not in get_queryset: a `qs.count()` there would fire an
+        # extra COUNT query per request — DRF's paginator already counts the
+        # queryset, so we read the total from the response it built for free.
+        response = super().list(request, *args, **kwargs)
+        # `Response.data` is stubbed too tightly to satisfy len() after the
+        # isinstance narrowing; it is a dict or list at runtime. Pin to Any —
+        # same stub-workaround pattern as week3/llm/__init__.py.
+        data: Any = response.data
+        total = data.get("count") if isinstance(data, dict) else len(data)
+        logger.info("OrderHistoryView: returning %s order(s)", total)
+        return response
 
 
 # ── Monte Carlo projection endpoint ──────────────────────────────────────────
@@ -72,11 +84,15 @@ ANNUAL_TRADING_DAYS = 252
 WEEKS_PER_YEAR = 52
 
 
-def _zerodha_round_trip_cost(buy_value: float, sell_value: float) -> float:
+def _zerodha_round_trip_cost(buy_value, sell_value):
     """Zerodha equity-delivery (CNC) round-trip — matches week1/one_week_simulation.py.
 
     The same cost stack the README and the orchestrator quote; centralised here
     so the API never disagrees with the standalone scripts.
+
+    Accepts floats OR NumPy arrays — the body is pure arithmetic, so passing
+    the whole `end_values` vector computes every simulation's cost in one
+    vectorised sweep instead of a Python-level loop over n_sims elements.
     """
     stt = (buy_value + sell_value) * 0.001
     exch = (buy_value + sell_value) * 0.0000325
@@ -87,23 +103,37 @@ def _zerodha_round_trip_cost(buy_value: float, sell_value: float) -> float:
     return stt + exch + sebi + stamp + gst + dp
 
 
+# Module-level cache for the backtest CSV: (file mtime, parsed table).
+# WHY mtime-keyed: the CSV changes only when week1/01_data_foundations.py is
+# re-run. Re-reading + re-parsing it on EVERY projection request is pure waste
+# on the hot path; keying the cache on the file's mtime means a refreshed CSV
+# is picked up automatically without a server restart.
+_stats_cache: tuple[float, dict[str, dict[str, float]]] | None = None
+
+
 def _load_backtest_stats() -> dict[str, dict[str, float]]:
     """Read the per-stock annual return / Sharpe from nifty_comparison.csv.
 
     Returned shape: {symbol: {"annual_return_pct": float, "annual_sharpe": float}}.
-    Cached implicitly by the CPython import system because callers re-load
-    rarely; refresh by re-running week1/01_data_foundations.py.
+    Cached at module level, invalidated by the file's mtime — refresh by
+    re-running week1/01_data_foundations.py.
     """
+    global _stats_cache
     if not _BACKTEST_CSV.exists():
         return {}
+    mtime = _BACKTEST_CSV.stat().st_mtime
+    if _stats_cache is not None and _stats_cache[0] == mtime:
+        return _stats_cache[1]
     with _BACKTEST_CSV.open() as fh:
-        return {
+        table = {
             row["Symbol"]: {
                 "annual_return_pct": float(row["Total_Return_%"]),
                 "annual_sharpe": float(row["Sharpe"]),
             }
             for row in csv.DictReader(fh)
         }
+    _stats_cache = (mtime, table)
+    return table
 
 
 class MonteCarloProjectionView(APIView):
@@ -173,14 +203,22 @@ class MonteCarloProjectionView(APIView):
 
         # Percentile bands — what the fan chart actually draws. We don't ship
         # the raw 2000×6 matrix to the browser; that's overkill for the cone.
-        def _pctile(q: int) -> list[float]:
-            return [round(float(v), 2) for v in np.percentile(paths, q, axis=0)]
+        # WHY one np.percentile call: computing all five quantiles in a single
+        # pass sorts/partitions the path matrix once instead of five times.
+        band_qs = (5, 25, 50, 75, 95)
+        bands = np.percentile(paths, band_qs, axis=0)
+        pctiles = {
+            f"p{q:02d}": [round(float(v), 2) for v in row]
+            for q, row in zip(band_qs, bands)
+        }
 
-        # Net-of-cost end-value summary at the final day.
+        # Net-of-cost end-value summary at the final day. The cost stack is
+        # vectorised — one array expression covers all n_sims paths (no loop).
         end_values = paths[:, -1]
-        costs = np.array([_zerodha_round_trip_cost(capital, ev) for ev in end_values])
+        costs = _zerodha_round_trip_cost(capital, end_values)
         net_ends = end_values - costs
         net_pct = (net_ends - capital) / capital * 100
+        net_p05, net_p50, net_p95 = np.percentile(net_ends, (5, 50, 95))
 
         logger.info("MonteCarloProjectionView: %s capital=%.0f horizon=%d "
                     "n_sims=%d -> exp_net=%.2f%% P(profit)=%.1f%%",
@@ -196,18 +234,12 @@ class MonteCarloProjectionView(APIView):
             # the X axis so it doesn't need to invent its own range.
             "days": list(range(horizon + 1)),
             # Five-band cone — matches the fan chart in one_week_simulation.py.
-            "percentiles": {
-                "p05": _pctile(5),
-                "p25": _pctile(25),
-                "p50": _pctile(50),
-                "p75": _pctile(75),
-                "p95": _pctile(95),
-            },
+            "percentiles": pctiles,
             "expected_net_pct": round(float(np.mean(net_pct)), 2),
             "expected_net_end_rs": round(float(np.mean(net_ends)), 2),
-            "p05_net_end_rs": round(float(np.percentile(net_ends, 5)), 2),
-            "p50_net_end_rs": round(float(np.percentile(net_ends, 50)), 2),
-            "p95_net_end_rs": round(float(np.percentile(net_ends, 95)), 2),
+            "p05_net_end_rs": round(float(net_p05), 2),
+            "p50_net_end_rs": round(float(net_p50), 2),
+            "p95_net_end_rs": round(float(net_p95), 2),
             "prob_profit_pct": round(float(np.mean(net_pct > 0)) * 100, 1),
             "avg_cost_rs": round(float(np.mean(costs)), 2),
             "cost_drag_pct": round(float(np.mean(costs) / capital) * 100, 2),

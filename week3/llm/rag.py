@@ -119,6 +119,38 @@ def _normalise(matrix: np.ndarray) -> np.ndarray:
     return matrix / (np.linalg.norm(matrix, axis=-1, keepdims=True) + 1e-9)
 
 
+# WHY cache the loaded index: querying used to re-load vectors.npy, re-parse
+# chunks.json, re-normalise the whole matrix and (with faiss) rebuild the
+# index ON EVERY CALL — all of it identical work per query. The cache is keyed
+# on (path, mtime) so rebuilding the index with build_index() invalidates it
+# automatically. {key: (normed vectors, chunks, faiss index or None)}
+_index_cache: dict[tuple[str, float], tuple[np.ndarray, list[dict], Any]] = {}
+
+
+def _load_index(index_dir: Path) -> tuple[np.ndarray, list[dict], Any]:
+    """Load (and memoise) the persisted index: normed vectors, chunks, faiss."""
+    vectors_file = index_dir / "vectors.npy"
+    key = (str(index_dir), vectors_file.stat().st_mtime)
+    if key in _index_cache:
+        return _index_cache[key]
+
+    vectors = np.load(vectors_file)
+    chunks = json.loads((index_dir / "chunks.json").read_text(encoding="utf-8"))
+    normed = _normalise(vectors).astype("float32")
+
+    faiss_index = None
+    if _HAS_FAISS:
+        # Inner product on L2-normalised vectors == cosine similarity. Built
+        # once here, reused by every query until the on-disk index changes.
+        # pyrefly: ignore[missing-attribute] -- guarded by _HAS_FAISS above
+        faiss_index = faiss.IndexFlatIP(normed.shape[1])
+        faiss_index.add(normed)
+
+    _index_cache.clear()  # keep at most one index in memory
+    _index_cache[key] = (normed, chunks, faiss_index)
+    return normed, chunks, faiss_index
+
+
 def query_rag(question: str, top_k: int = 5, index_dir: Path = INDEX_DIR) -> list[Chunk]:
     """Return the `top_k` chunks most relevant to `question`.
 
@@ -130,24 +162,25 @@ def query_rag(question: str, top_k: int = 5, index_dir: Path = INDEX_DIR) -> lis
         raise RuntimeError(
             f"no RAG index at {index_dir} — run build_index(pdf_dir) first")
 
-    vectors = np.load(index_dir / "vectors.npy")
-    chunks = json.loads((index_dir / "chunks.json").read_text(encoding="utf-8"))
+    normed, chunks, faiss_index = _load_index(index_dir)
     query_vec = np.array(embed([question])[0], dtype="float32")
-
-    normed = _normalise(vectors)
     query_normed = _normalise(query_vec)
 
-    if _HAS_FAISS:
-        # Inner product on L2-normalised vectors == cosine similarity.
-        # pyrefly: ignore[missing-attribute] -- guarded by _HAS_FAISS above
-        index = faiss.IndexFlatIP(normed.shape[1])
-        index.add(normed.astype("float32"))
-        scores, idx = index.search(query_normed.reshape(1, -1).astype("float32"), top_k)
+    if faiss_index is not None:
+        scores, idx = faiss_index.search(
+            query_normed.reshape(1, -1).astype("float32"), top_k)
         idx, scores = idx[0], scores[0]
     else:
         logger.warning("RAG: faiss not installed — using NumPy brute-force search")
         sims = normed @ query_normed
-        idx = np.argsort(sims)[::-1][:top_k]
+        # WHY argpartition + argsort-of-top_k: a full argsort is O(n log n)
+        # over every chunk; partitioning first is O(n) + a sort of just top_k.
+        top_k = max(0, min(top_k, len(sims)))
+        if top_k == 0:
+            idx = np.array([], dtype=int)
+        else:
+            part = np.argpartition(sims, -top_k)[-top_k:]
+            idx = part[np.argsort(sims[part])[::-1]]
         scores = sims[idx]
 
     results = [Chunk(text=chunks[i]["text"], source=chunks[i]["source"],
