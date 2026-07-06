@@ -120,4 +120,3 @@ paper broker *or* a live one, without rewrites.
 | `quant` | `pip install -r quant/requirements.txt` |
 | `fastapi_spike` | `pip install -r fastapi_spike/requirements.txt`; `uvicorn` |
 
-Concept notes and interview lines live in `LEARNINGS.md` (git-ignored).
