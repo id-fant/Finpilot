@@ -187,6 +187,14 @@ BROKER_MAX_POSITIONS = int(os.environ.get("BROKER_MAX_POSITIONS", "10"))
 BROKER_MAX_DAILY_ORDERS = int(os.environ.get("BROKER_MAX_DAILY_ORDERS", "20"))
 PAPER_STARTING_CASH = float(os.environ.get("PAPER_STARTING_CASH", "1000000"))
 
+# ── LLM analyst gate (Week 3 integration) ────────────────────────────────────
+# "auto" — the analyst reviews each proposed trade when GEMINI_API_KEY is set,
+#          and is silently skipped when it isn't (fail-open: the deterministic
+#          engine + OrderManager caps are the load-bearing safety rails).
+# "off"  — never call the analyst, even with a key (e.g. to save quota, or to
+#          A/B the gate's effect on the paper book).
+ANALYST_GATE = os.environ.get("ANALYST_GATE", "auto").lower()
+
 # Make week4/ importable from week2 code (signals/, portfolio/). The broker
 # package is deliberately framework-free (see HANDOFF §5) and lives outside
 # week2/, so we extend sys.path here — settings.py is the canonical place to

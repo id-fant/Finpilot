@@ -20,11 +20,130 @@ from __future__ import annotations
 import logging
 from datetime import date
 from decimal import Decimal
+from typing import Any
 
 from celery import shared_task
 from django.conf import settings
 
 logger = logging.getLogger(__name__)
+
+# Optional LLM analyst gate — week3's reviewer can veto or shrink a proposed
+# trade before it reaches the broker. Guarded exactly like the enricher in
+# signals/tasks.py: week2 works unchanged if week3 is absent or no key is set —
+# the deterministic engine + OrderManager risk gates are the always-safe path.
+review_trade: Any
+analyst_headlines_for: Any
+try:
+    from llm.analyst import review_trade  # pyrefly: ignore[missing-import]
+    from llm.news import headlines_for as analyst_headlines_for  # pyrefly: ignore[missing-import]
+    _HAS_ANALYST = True
+except ImportError:
+    review_trade = None
+    analyst_headlines_for = None
+    _HAS_ANALYST = False
+
+
+def _analyst_gate(signal, open_symbols: set[str]) -> dict | None:
+    """Run the LLM analyst over one proposed trade. Returns a verdict or None.
+
+    None means "gate not in play" — week3 missing, ANALYST_GATE=off, no
+    GEMINI_API_KEY, or the LLM failed. The caller treats None as full-size
+    approve: the gate FAILS OPEN. WHY fail-open and not fail-closed: the
+    deterministic engine + OrderManager caps are the load-bearing safety
+    rails; the analyst is an *extra* filter. Failing closed would mean an LLM
+    outage silently halts all trading — an availability dependency an
+    advisory component must never have.
+    """
+    import os
+    if (not _HAS_ANALYST or settings.ANALYST_GATE == "off"
+            or not os.environ.get("GEMINI_API_KEY")):
+        return None
+    sig_dict = {
+        "symbol": signal.stock.symbol,
+        "signal": signal.signal_type,
+        "price": float(signal.price),
+        "reason": signal.reason,
+    }
+    try:
+        try:
+            # pyrefly: ignore[not-callable] -- guarded by _HAS_ANALYST above
+            headlines = analyst_headlines_for(signal.stock.symbol, limit=5)
+        except Exception as e:  # noqa: BLE001 - news is best-effort
+            logger.debug("analyst gate: headlines failed for %s: %s",
+                         signal.stock.symbol, e)
+            headlines = None
+        # pyrefly: ignore[not-callable] -- guarded by _HAS_ANALYST above
+        return review_trade(sig_dict, headlines=headlines,
+                            portfolio={"open_symbols": sorted(open_symbols)})
+    except Exception as e:  # noqa: BLE001 - LLM trouble must not block trading
+        logger.warning("analyst gate failed for %s (%s) — failing open to "
+                       "technical rules", signal.stock.symbol, e)
+        return None
+
+
+def _apply_fill_to_position(stock, side: str, quantity: int, price: Decimal,
+                            when: date) -> None:
+    """Upsert the Position row for one filled order — the broker's book,
+    mirrored into the database the dashboard reads.
+
+    BUY: create the open position, or fold the fill into the existing one at
+    a volume-weighted average entry price (same maths as PaperBroker's
+    `_add_position`). SELL: book realised P&L against the average entry and
+    close the position when quantity reaches zero.
+
+    WHY keyed on (stock, is_open=True): one open position per stock is this
+    strategy's contract — signals are per-stock-per-day, and OrderManager
+    blocks shorts. The unique key makes the upsert idempotent.
+    """
+    from .models import Position
+
+    if quantity < 1:
+        return
+    open_pos = Position.objects.filter(stock=stock, is_open=True).first()
+
+    if side == "BUY":
+        if open_pos is None:
+            Position.objects.create(
+                stock=stock, quantity=quantity, avg_entry_price=price,
+                entry_date=when,
+            )
+            logger.info("position: opened %s x%d @ %s", stock.symbol,
+                        quantity, price)
+        else:
+            total_qty = open_pos.quantity + quantity
+            invested = (open_pos.avg_entry_price * open_pos.quantity
+                        + price * quantity)
+            open_pos.avg_entry_price = (invested / total_qty).quantize(
+                Decimal("0.01"))
+            open_pos.quantity = total_qty
+            open_pos.save(update_fields=["avg_entry_price", "quantity"])
+            logger.info("position: added %s x%d — now x%d @ avg %s",
+                        stock.symbol, quantity, total_qty,
+                        open_pos.avg_entry_price)
+        return
+
+    # SELL — reduce or close.
+    if open_pos is None:
+        # The broker accepted a sell we have no book entry for (e.g. a live
+        # holding bought outside FinPilot). Don't invent a phantom short row —
+        # log it loudly; the Order row still records the trade itself.
+        logger.warning("position: SELL fill for %s with no open position — "
+                       "not tracked (held outside FinPilot?)", stock.symbol)
+        return
+    sold = min(quantity, open_pos.quantity)
+    realised = ((price - open_pos.avg_entry_price) * sold).quantize(
+        Decimal("0.01"))
+    open_pos.pnl = open_pos.pnl + realised
+    open_pos.quantity -= sold
+    if open_pos.quantity <= 0:
+        open_pos.is_open = False
+        open_pos.exit_price = price
+        open_pos.exit_date = when
+    open_pos.save()
+    logger.info("position: sold %s x%d @ %s — realised %s, %s",
+                stock.symbol, sold, price, realised,
+                "closed" if not open_pos.is_open else
+                f"x{open_pos.quantity} still open")
 
 
 def _build_broker():
@@ -69,7 +188,7 @@ def execute_signal_orders(target_date: str | None = None) -> dict:
     # fully populated; a top-level model import can raise AppRegistryNotReady.
     # See LEARNINGS #44.
     from signals.models import Signal
-    from .models import Order
+    from .models import JournalEntry, Order, Position
 
     when = date.fromisoformat(target_date) if target_date else date.today()
     logger.info("execute_signal_orders: starting run for %s", when)
@@ -88,7 +207,7 @@ def execute_signal_orders(target_date: str | None = None) -> dict:
 
     if not candidates:
         return {"date": str(when), "placed": 0, "skipped": 0,
-                "rejected": 0, "failed": 0, "total": 0}
+                "rejected": 0, "vetoed": 0, "failed": 0, "total": 0}
 
     # WHY build OrderManager from settings.* (not hardcoded): the risk gates are
     # 12-factor config — adjustable per environment without a code change.
@@ -103,7 +222,7 @@ def execute_signal_orders(target_date: str | None = None) -> dict:
     )
     is_paper = settings.BROKER == "paper"
 
-    placed = skipped = rejected = failed = 0
+    placed = skipped = rejected = vetoed = failed = 0
 
     # WHY one dedup query up front, not one .exists() per signal: re-running
     # the task for the same date must not double-fire orders — but checking
@@ -117,6 +236,14 @@ def execute_signal_orders(target_date: str | None = None) -> dict:
         .values_list("signal_id", "side")
     )
 
+    # Current book, for the analyst's portfolio context. Kept as a plain set of
+    # symbols and updated in-loop so later signals in the same run see the
+    # positions earlier fills just opened.
+    open_symbols = set(
+        Position.objects.filter(is_open=True)
+        .values_list("stock__symbol", flat=True)
+    )
+
     for signal in candidates:
         if (signal.pk, signal.signal_type) in existing_orders:
             logger.debug("execute_signal_orders: %s already has an order — skipping",
@@ -124,11 +251,39 @@ def execute_signal_orders(target_date: str | None = None) -> dict:
             skipped += 1
             continue
 
+        # ── LLM analyst gate (week3, optional) ──────────────────────────────
+        # The agentic step: an LLM reviews the proposed trade against fresh
+        # headlines + the current book and can veto it or halve its size.
+        # Every verdict is journalled — the agent must be auditable. The gate
+        # fails OPEN (verdict None = proceed full size): OrderManager's
+        # deterministic caps below remain the real safety rails.
+        budget = None
+        verdict = _analyst_gate(signal, open_symbols)
+        if verdict is not None:
+            JournalEntry.objects.create(
+                stage="analyst",
+                symbol=signal.stock.symbol,
+                decision=verdict["verdict"].upper(),
+                detail=verdict["rationale"],
+                payload=verdict,
+            )
+            if verdict["verdict"] == "veto":
+                logger.warning("execute_signal_orders: analyst VETOED %s %s — %s",
+                               signal.signal_type, signal.stock.symbol,
+                               verdict["rationale"])
+                vetoed += 1
+                continue
+            if verdict["verdict"] == "reduce":
+                budget = settings.BROKER_MAX_TRADE_VALUE / 2
+                logger.info("execute_signal_orders: analyst REDUCED %s to "
+                            "half size — %s", signal.stock.symbol,
+                            verdict["rationale"])
+
         try:
             result = manager.execute_signal({
                 "symbol": signal.stock.symbol,
                 "action": signal.signal_type,
-            })
+            }, budget=budget)
         except Exception as exc:  # noqa: BLE001 - one bad ticker mustn't abort the batch
             logger.error("execute_signal_orders: FAILED for %s — %s",
                          signal.stock.symbol, exc, exc_info=True)
@@ -147,6 +302,7 @@ def execute_signal_orders(target_date: str | None = None) -> dict:
         # Persist every outcome — including rejections — as an Order row.
         # Rejected orders are audit material: "why didn't this signal trade?"
         # is a question you WILL be asked in any post-mortem.
+        fill_price = Decimal(str(result.get("price", signal.price)))
         Order.objects.create(
             stock=signal.stock,
             signal=signal,
@@ -157,12 +313,28 @@ def execute_signal_orders(target_date: str | None = None) -> dict:
             # returns a float for the fill price — convert at the boundary so
             # the DB stores an exact value (LEARNINGS #45). Rejections without
             # a fill price get the signal price as a placeholder.
-            price=Decimal(str(result.get("price", signal.price))),
+            price=fill_price,
             status=("COMPLETE" if status == "COMPLETE"
                     else "PENDING" if status == "SUBMITTED"
                     else "REJECTED"),
             is_paper=is_paper,
         )
+
+        # ── Position bookkeeping (the fix for the dashboard's empty donut) ──
+        # WHY COMPLETE only: a paper fill is always COMPLETE; a live Kite
+        # order comes back SUBMITTED and is only *pending* — booking it as a
+        # position before the exchange confirms would overstate the book.
+        # (Live fill-confirmation polling is a later refinement.)
+        if status == "COMPLETE":
+            _apply_fill_to_position(
+                signal.stock, signal.signal_type,
+                result.get("quantity", 0), fill_price, when,
+            )
+            if signal.signal_type == "BUY":
+                open_symbols.add(signal.stock.symbol)
+            elif not Position.objects.filter(
+                    stock=signal.stock, is_open=True).exists():
+                open_symbols.discard(signal.stock.symbol)
 
         if status in ("COMPLETE", "SUBMITTED"):
             placed += 1
@@ -181,6 +353,7 @@ def execute_signal_orders(target_date: str | None = None) -> dict:
         "placed": placed,
         "skipped": skipped,
         "rejected": rejected,
+        "vetoed": vetoed,
         "failed": failed,
         "total": len(candidates),
         "broker": settings.BROKER,

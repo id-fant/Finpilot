@@ -263,7 +263,9 @@ def _round_trip_cost(buy_value: float, sell_value: float) -> float:
 
 # ── Main orchestrator ────────────────────────────────────────────────────────
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__.split("\n\n", 1)[0])
+    # `__doc__` is Optional under -OO; the `or ""` keeps pyright satisfied —
+    # same guard as week4/scripts/kite_login.py.
+    parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n", 1)[0])
     parser.add_argument("--refresh-db", action="store_true",
                         help="wipe Stock/Signal/Order/Position rows before running")
     args = parser.parse_args()

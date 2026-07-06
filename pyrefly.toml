@@ -36,6 +36,9 @@ search-path = [
     "week4",
     "week4/broker",
     "fastapi_spike",
+    # scripts/ has no __init__.py — the supervisor imports its sibling
+    # (run_integrated_demo) as a top-level module, mirroring sys.path at runtime.
+    "scripts",
 ]
 
 python-version = "3.13"

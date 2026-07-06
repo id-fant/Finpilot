@@ -150,8 +150,14 @@ function MonteCarloPanel({ availableSymbols }) {
       + `?symbol=${encodeURIComponent(symbol)}`
       + `&capital=${capital}&horizon_days=${horizon}`;
     fetch(url)
-      .then((r) => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      .then(async (r) => {
+        if (!r.ok) {
+          // The endpoint's error body says WHY (e.g. "no backtest stats for
+          // 'X'") — surface that instead of a bare status code. A 404 here
+          // means the API answered; only a failed fetch means it's down.
+          const body = await r.json().catch(() => null);
+          throw new Error((body && body.error) || `HTTP ${r.status}`);
+        }
         return r.json();
       })
       .then((d) => { if (!cancelled) { setResult(d); setLoading(false); } })
@@ -190,7 +196,12 @@ function MonteCarloPanel({ availableSymbols }) {
 
       {error && (
         <div className="muted" style={{ color: 'var(--red)', marginBottom: 12 }}>
-          error: {error}. Is the Django API running on {window.FINPILOT_API}?
+          error: {error}
+          {/* "Failed to fetch" = connection refused → the API really is down.
+              Anything else came FROM the API, so don't blame the connection. */}
+          {/fetch|network/i.test(error)
+            ? `. Is the Django API running on ${window.FINPILOT_API}?`
+            : ''}
         </div>
       )}
       {loading && !result && <div className="muted">loading…</div>}
@@ -237,12 +248,15 @@ function MonteCarloPanel({ availableSymbols }) {
 
 // ── Sidebar-nav wrapper ─────────────────────────────────────────────────────
 function MonteCarloView({ stocks }) {
-  // Build a symbol picker from the FinPilot signal map if available, otherwise
-  // fall back to the static basket. Cardinal stores bare symbols ("RELIANCE");
-  // the API wants NSE-suffixed ("RELIANCE.NS"), so re-attach .NS.
-  const symbols = stocks?.length
-    ? stocks.map((s) => `${s.sym}.NS`)
-    : MC_DEFAULT_SYMBOLS;
+  // Build a symbol picker from the watchlist, but only keep symbols the
+  // projection endpoint has backtest stats for (the rows in
+  // week1/nifty_comparison.csv). The watchlist can hold GLOBAL symbols
+  // (NVDA, AAPL — blindly appending ".NS" made "NVDA.NS") or NSE names
+  // outside week1's backtest set (SBIN, ITC) — those 404 on first fetch and
+  // used to render a misleading "is the API running?" error.
+  const candidates = (stocks || []).map((s) => `${s.sym}.NS`);
+  const withStats = candidates.filter((s) => MC_DEFAULT_SYMBOLS.includes(s));
+  const symbols = withStats.length ? withStats : MC_DEFAULT_SYMBOLS;
   return (
     <div className="view-enter">
       <PageHead

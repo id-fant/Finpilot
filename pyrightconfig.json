@@ -9,14 +9,16 @@
     "week3",
     "week4",
     "quant",
-    "fastapi_spike"
+    "fastapi_spike",
+    "scripts"
   ],
   "extraPaths": [
     "week1",
     "week2",
     "week3",
     "week4",
-    "fastapi_spike"
+    "fastapi_spike",
+    "scripts"
   ],
   "exclude": [
     "**/.pytest_cache",

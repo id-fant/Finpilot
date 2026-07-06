@@ -1,7 +1,8 @@
-"""Database models for the `portfolio` app: Position and Order.
+"""Database models for the `portfolio` app: Position, Order and JournalEntry.
 
-These are populated in Week 4 when the broker / order manager is wired up. They
-are defined now so the schema is stable and the API surface exists early.
+Position/Order are populated in Week 4 when the broker / order manager is
+wired up. JournalEntry is the agentic layer's audit trail — every decision the
+analyst gate or the trading-session supervisor makes lands here.
 """
 from django.db import models
 
@@ -70,3 +71,46 @@ class Order(models.Model):
 
     def __str__(self) -> str:
         return f"{self.side} {self.quantity} {self.stock.symbol} [{self.status}]"
+
+
+class JournalEntry(models.Model):
+    """One decision made by the agentic layer — the system's diary.
+
+    WHY a journal table and not just log lines: logs answer "what happened"
+    for a developer; the journal answers "why did the system trade (or refuse
+    to)" for a *user* — queryable, renderable on the dashboard, and durable
+    across restarts. An agent that can't explain its decisions afterwards is
+    not auditable, and un-auditable agents don't ship in finance.
+
+    INTERVIEW — agent observability: when asked how you'd monitor an
+    autonomous trading agent, point here: every stage (signal, analyst
+    verdict, execution, exit check, session summary) writes a structured row
+    with a human-readable rationale plus a machine-readable payload.
+    """
+
+    STAGES = [
+        ("signal", "Signal"),          # engine emitted / refreshed signals
+        ("analyst", "Analyst"),        # LLM analyst verdict on a proposed trade
+        ("execution", "Execution"),    # order routed to the broker
+        ("exit", "Exit check"),        # stop-loss / take-profit decision
+        ("session", "Session"),        # supervisor start / end / cycle summary
+    ]
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    stage = models.CharField(max_length=12, choices=STAGES)
+    # Blank for session-level entries that aren't about one stock.
+    symbol = models.CharField(max_length=20, blank=True, default="")
+    # Short decision word: APPROVE / VETO / REDUCE / SELL / HOLD / START / ...
+    decision = models.CharField(max_length=20)
+    # The human-readable rationale — the "why" a reviewer actually reads.
+    detail = models.TextField(blank=True, default="")
+    # Machine-readable context (verdict JSON, prices, counts) for the dashboard.
+    payload = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name_plural = "journal entries"
+
+    def __str__(self) -> str:
+        target = self.symbol or "session"
+        return f"[{self.stage}] {target}: {self.decision}"

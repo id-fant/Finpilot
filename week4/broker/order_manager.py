@@ -40,10 +40,14 @@ class OrderManager:
 
     # ── Public API ───────────────────────────────────────────────────────────
 
-    def execute_signal(self, signal: dict) -> dict:
+    def execute_signal(self, signal: dict, *, budget: float | None = None) -> dict:
         """Take one strategy signal and turn it into a broker order.
 
         `signal` is {"symbol": "RELIANCE.NS", "action": "BUY"|"SELL"|"HOLD"}.
+        `budget` optionally shrinks THIS trade's rupee budget below the
+        manager-wide cap — e.g. the LLM analyst gate's "reduce" verdict runs a
+        trade at half size. It can only lower the cap, never raise it: the
+        risk ceiling stays with the deterministic config, not with any caller.
         Returns the broker's order result, or a SKIPPED / REJECTED record —
         never raises, so a bad signal can't halt the batch.
         """
@@ -53,14 +57,17 @@ class OrderManager:
         if action == "HOLD":
             return {"status": "SKIPPED", "symbol": symbol, "reason": "HOLD signal"}
 
+        trade_budget = (min(budget, self.max_trade_value)
+                        if budget is not None else self.max_trade_value)
+
         try:
             self._check_risk(symbol, action)
             ltp = self.broker.get_ltp(symbol)
-            quantity = math.floor(self.max_trade_value / ltp)
+            quantity = math.floor(trade_budget / ltp)
             if quantity < 1:
                 raise RiskRejection(
                     f"{symbol} at {ltp:,.2f} exceeds the per-trade budget "
-                    f"of {self.max_trade_value:,.0f}")
+                    f"of {trade_budget:,.0f}")
             result = self.broker.place_order(symbol, action, quantity)
             if result.get("status") in ("COMPLETE", "SUBMITTED"):
                 self._orders_today += 1
