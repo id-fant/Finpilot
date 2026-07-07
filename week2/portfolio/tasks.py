@@ -206,8 +206,8 @@ def execute_signal_orders(target_date: str | None = None) -> dict:
                 len(candidates), when)
 
     if not candidates:
-        return {"date": str(when), "placed": 0, "skipped": 0,
-                "rejected": 0, "vetoed": 0, "failed": 0, "total": 0}
+        return {"date": str(when), "placed": 0, "skipped": 0, "rejected": 0,
+                "vetoed": 0, "ml_skipped": 0, "failed": 0, "total": 0}
 
     # WHY build OrderManager from settings.* (not hardcoded): the risk gates are
     # 12-factor config — adjustable per environment without a code change.
@@ -222,7 +222,16 @@ def execute_signal_orders(target_date: str | None = None) -> dict:
     )
     is_paper = settings.BROKER == "paper"
 
-    placed = skipped = rejected = vetoed = failed = 0
+    placed = skipped = rejected = vetoed = ml_skipped = failed = 0
+
+    # Resolve the ML gate threshold once: 0 = defer to the value chosen on
+    # out-of-sample data at training time (core/ml_gate.py reads it from the
+    # model's meta JSON).
+    if settings.ML_GATE != "off":
+        from core.ml_gate import default_threshold
+        ml_threshold = settings.ML_GATE_THRESHOLD or default_threshold()
+    else:
+        ml_threshold = None
 
     # WHY one dedup query up front, not one .exists() per signal: re-running
     # the task for the same date must not double-fire orders — but checking
@@ -249,6 +258,34 @@ def execute_signal_orders(target_date: str | None = None) -> dict:
             logger.debug("execute_signal_orders: %s already has an order — skipping",
                          signal.stock.symbol)
             skipped += 1
+            continue
+
+        # ── Meta-labeling ML gate (quant/04, optional) ──────────────────────
+        # First filter after dedup: the walk-forward model's P(clears costs).
+        # Cheaper than the LLM gate (local inference, no metered API), so it
+        # runs first — no point paying for an analyst verdict on a trade the
+        # statistics already reject. NULL ml_prob = unscored -> passes through
+        # (fail-open, same contract as the analyst gate).
+        if (ml_threshold is not None and signal.signal_type == "BUY"
+                and signal.ml_prob is not None
+                and signal.ml_prob < ml_threshold):
+            ml_skipped += 1
+            # One journal row per skip per day — the supervisor re-runs this
+            # task every cycle and must not spam duplicates (same dedup idea
+            # as the VETO check below).
+            if not JournalEntry.objects.filter(
+                    stage="ml", symbol=signal.stock.symbol,
+                    decision="SKIP", created_at__date=when).exists():
+                JournalEntry.objects.create(
+                    stage="ml", symbol=signal.stock.symbol, decision="SKIP",
+                    detail=(f"meta-model P(clears costs)={signal.ml_prob:.2f} "
+                            f"< threshold {ml_threshold:.2f} — trade skipped"),
+                    payload={"ml_prob": signal.ml_prob,
+                             "threshold": ml_threshold},
+                )
+            logger.info("execute_signal_orders: ML gate skipped %s "
+                        "(p=%.2f < %.2f)", signal.stock.symbol,
+                        signal.ml_prob, ml_threshold)
             continue
 
         # ── LLM analyst gate (week3, optional) ──────────────────────────────
@@ -367,6 +404,7 @@ def execute_signal_orders(target_date: str | None = None) -> dict:
         "skipped": skipped,
         "rejected": rejected,
         "vetoed": vetoed,
+        "ml_skipped": ml_skipped,
         "failed": failed,
         "total": len(candidates),
         "broker": settings.BROKER,

@@ -41,6 +41,13 @@ def fetch_ohlcv(symbol: str, period: str = "1y", retries: int = 3) -> pd.DataFra
         try:
             df = yf.Ticker(symbol).history(period=period)
             if not df.empty:
+                # WHY drop NaN-Close rows: Yahoo sometimes appends a PARTIAL
+                # trailing bar (the current session before prices consolidate)
+                # carrying volume but NaN OHLC. A NaN close poisons the
+                # last-bar signal (price=NaN fails the DecimalField) and every
+                # indicator after it. A bar without a close is not a bar.
+                df = df.dropna(subset=["Close"])
+            if not df.empty:
                 # WHY normalise the index: yfinance returns a timezone-AWARE
                 # index. pandas comparisons/joins fail when mixing tz-aware and
                 # tz-naive timestamps, so we strip the tz to a plain date index.

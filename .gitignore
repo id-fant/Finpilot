@@ -93,3 +93,7 @@ Thumbs.db
 # ── Logs ──
 *.log
 logs/
+
+# ── Meta-labeling artifacts (rebuild: quant/04_meta_labeling scripts 01→02) ──
+quant/04_meta_labeling/data/
+quant/04_meta_labeling/model/

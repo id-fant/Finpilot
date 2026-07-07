@@ -137,6 +137,7 @@ def generate_signal(df: pd.DataFrame, symbol: str) -> dict:
             "rsi": None, "macd": None, "macd_signal": None,
             "price": round(float(last["Close"]), 2),
             "reason": "HOLD (insufficient history to evaluate indicators)",
+            "buy_votes": 0, "sell_votes": 0,
         }
 
     today = indicators.iloc[-1]
@@ -197,4 +198,9 @@ def generate_signal(df: pd.DataFrame, symbol: str) -> dict:
         "macd_signal": _clean(today["macd_signal"]),
         "price": round(float(today["Close"]), 2),
         "reason": reason,
+        # Vote counts feed the meta-labeling ML gate (core/ml_features.py) —
+        # 3-of-3 confluence is a stronger setup than 2-of-3, and the model
+        # should know which it is looking at.
+        "buy_votes": buy_votes,
+        "sell_votes": sell_votes,
     }

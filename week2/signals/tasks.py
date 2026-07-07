@@ -7,6 +7,7 @@ from typing import Any
 from celery import shared_task
 
 from core.data import fetch_ohlcv
+from core.ml_gate import score_signal
 from core.strategy import generate_signal
 
 logger = logging.getLogger(__name__)
@@ -116,8 +117,16 @@ def generate_daily_signals() -> dict:
     for stock in tracked:
         logger.debug("generate_daily_signals: processing %s", stock.symbol)
         try:
-            df = fetch_ohlcv(stock.symbol, period="6mo")
+            # WHY 1y (was 6mo): the ML gate's dist_sma200 feature needs 200
+            # bars of history. The indicators themselves are unchanged — RSI/
+            # MACD/Bollinger only look back ~26 bars either way.
+            df = fetch_ohlcv(stock.symbol, period="1y")
             result = generate_signal(df, stock.symbol)
+            # Meta-labeling score for BUY entries (the only side the live
+            # system trades). None = gate not in play (no model / failure) —
+            # stored as NULL, which downstream treats as "unscored", never 0.
+            ml_prob = (score_signal(df, result["buy_votes"])
+                       if result["signal"] == "BUY" else None)
             # WHY reuse today's explanation when the verdict is unchanged:
             # Gemini's free tier is metered PER DAY (e.g. 20 requests). The
             # supervisor re-runs this task every cycle — re-explaining an
@@ -147,6 +156,7 @@ def generate_daily_signals() -> dict:
                     "macd": result["macd"],
                     "macd_signal": result["macd_signal"],
                     "reason": reason,
+                    "ml_prob": ml_prob,
                 },
             )
             written += 1

@@ -195,6 +195,16 @@ PAPER_STARTING_CASH = float(os.environ.get("PAPER_STARTING_CASH", "1000000"))
 #          A/B the gate's effect on the paper book).
 ANALYST_GATE = os.environ.get("ANALYST_GATE", "auto").lower()
 
+# ── Meta-labeling ML gate (quant/04 integration) ─────────────────────────────
+# "auto" — BUY signals scored by the meta-model are skipped when
+#          P(clears costs) < ML_GATE_THRESHOLD. Silently inactive when the
+#          model artifact is missing (core/ml_gate.py returns None).
+# "off"  — never gate on the ML score, even when signals carry one.
+# Threshold default 0 means "use the threshold chosen at training time"
+# (stored in the model's meta JSON, picked on out-of-sample data).
+ML_GATE = os.environ.get("ML_GATE", "auto").lower()
+ML_GATE_THRESHOLD = float(os.environ.get("ML_GATE_THRESHOLD", "0"))
+
 # Make week4/ importable from week2 code (signals/, portfolio/). The broker
 # package is deliberately framework-free (see HANDOFF §5) and lives outside
 # week2/, so we extend sys.path here — settings.py is the canonical place to

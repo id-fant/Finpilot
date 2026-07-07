@@ -90,6 +90,7 @@ class JournalEntry(models.Model):
 
     STAGES = [
         ("signal", "Signal"),          # engine emitted / refreshed signals
+        ("ml", "ML gate"),             # meta-labeling model skipped a trade
         ("analyst", "Analyst"),        # LLM analyst verdict on a proposed trade
         ("execution", "Execution"),    # order routed to the broker
         ("exit", "Exit check"),        # stop-loss / take-profit decision

@@ -42,6 +42,10 @@ class Signal(models.Model):
     # `reason` is filled with a plain technical explanation now; Week 3's LLM
     # explainer will overwrite it with a richer, news-grounded narrative.
     reason = models.TextField(blank=True)
+    # Meta-labeling gate score: P(this signal clears costs), from the model in
+    # quant/04_meta_labeling. Null when the gate isn't in play (no model file,
+    # HOLD signal, or scoring failed) — null means "unscored", never 0.
+    ml_prob = models.FloatField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
