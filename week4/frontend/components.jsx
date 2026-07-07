@@ -34,6 +34,7 @@ const NAV_SECTIONS = [
     { name: 'Portfolio', icon: 'Wallet' },
     { name: 'Trades', icon: 'Trades' },
     { name: 'Simulation', icon: 'Chart' },
+    { name: 'Journal', icon: 'News' },
     { name: 'News & Insights', icon: 'News' },
   ]},
   { label: 'Other', items: [

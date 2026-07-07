@@ -1,7 +1,7 @@
 """DRF serializers for the `portfolio` app."""
 from rest_framework import serializers
 
-from .models import Order, Position
+from .models import JournalEntry, Order, Position
 
 
 class PositionSerializer(serializers.ModelSerializer):
@@ -27,4 +27,15 @@ class OrderSerializer(serializers.ModelSerializer):
         fields = [
             "id", "symbol", "signal", "order_type", "side", "quantity",
             "price", "status", "is_paper", "created_at",
+        ]
+
+
+class JournalEntrySerializer(serializers.ModelSerializer):
+    """One agent decision, exactly as the dashboard's Journal view renders it."""
+
+    class Meta:  # pyrefly: ignore[bad-override]  # pyright: ignore[reportIncompatibleVariableOverride]
+        model = JournalEntry
+        fields = [
+            "id", "created_at", "stage", "symbol", "decision", "detail",
+            "payload",
         ]

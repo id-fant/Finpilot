@@ -11,8 +11,10 @@ from rest_framework import generics, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import Order, Position
-from .serializers import OrderSerializer, PositionSerializer
+from .models import JournalEntry, Order, Position
+from .serializers import (
+    JournalEntrySerializer, OrderSerializer, PositionSerializer,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +77,39 @@ class OrderHistoryView(generics.ListAPIView):
         data: Any = response.data
         total = data.get("count") if isinstance(data, dict) else len(data)
         logger.info("OrderHistoryView: returning %s order(s)", total)
+        return response
+
+
+class JournalEntryListView(generics.ListAPIView):
+    """GET /api/portfolio/journal/ — the agent's decision diary, newest first.
+
+    Optional filters:
+      ?stage=analyst|exit|execution|session|signal   one decision stage
+      ?symbol=RELIANCE.NS                            one stock (exact match)
+
+    This is the read side of the agentic layer: every analyst verdict, exit
+    decision and supervisor cycle lands in JournalEntry (see portfolio/tasks.py
+    and scripts/run_trading_session.py); the dashboard's Journal view renders
+    this endpoint so the agent's reasoning is inspectable without the admin.
+    """
+
+    serializer_class = JournalEntrySerializer
+
+    def get_queryset(self) -> QuerySet[JournalEntry]:  # pyrefly: ignore[bad-override]
+        qs = JournalEntry.objects.all()
+        stage = self.request.query_params.get("stage")
+        if stage:
+            qs = qs.filter(stage=stage)
+        symbol = self.request.query_params.get("symbol")
+        if symbol:
+            qs = qs.filter(symbol=symbol)
+        return qs
+
+    def list(self, request, *args, **kwargs):
+        response = super().list(request, *args, **kwargs)
+        data: Any = response.data
+        total = data.get("count") if isinstance(data, dict) else len(data)
+        logger.info("JournalEntryListView: returning %s entry(ies)", total)
         return response
 
 

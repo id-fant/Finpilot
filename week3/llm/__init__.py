@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import time
 from typing import Any
 
@@ -53,10 +54,36 @@ except ImportError:
     _HAS_GENAI = False
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-CHAT_MODEL = "gemini-2.0-flash"      # fast + cheap; fine for explanations
-EMBED_MODEL = "text-embedding-004"
+# WHY env-overridable with a -latest default: model free-tier quotas move
+# under our feet — gemini-2.0-flash's free tier went to limit:0 in 2026 and
+# every call started 429ing. "gemini-flash-latest" tracks the current flash
+# model; pin GEMINI_MODEL in .env if a specific version matters.
+CHAT_MODEL = os.environ.get("GEMINI_MODEL", "gemini-flash-latest")
+EMBED_MODEL = os.environ.get("GEMINI_EMBED_MODEL", "text-embedding-004")
 
 _client = None  # built lazily, once
+
+
+def _ssl_context():
+    """Custom SSL context honouring SSL_CERT_FILE, or None for SDK defaults.
+
+    WHY this exists: antivirus HTTPS scanning (Avast Web/Mail Shield on the
+    dev machine) re-signs every TLS connection with its own root. That root
+    lives in a combined bundle built by scripts/build_ca_bundle.py and pointed
+    to by SSL_CERT_FILE — but Python 3.13 turned on VERIFY_X509_STRICT by
+    default, and Avast's root is not RFC 5280-strict ("Basic Constraints of
+    CA cert not marked critical"), so the default context still rejects it.
+    Relaxing ONLY the strict flag — and only when a custom bundle is
+    explicitly configured — keeps full chain verification while accepting the
+    interception root the machine already trusts at the OS level.
+    """
+    import ssl
+    cafile = os.environ.get("SSL_CERT_FILE") or os.environ.get("CURL_CA_BUNDLE")
+    if not cafile or not os.path.exists(cafile):
+        return None
+    ctx = ssl.create_default_context(cafile=cafile)
+    ctx.verify_flags &= ~ssl.VERIFY_X509_STRICT
+    return ctx
 
 
 def _get_client():
@@ -74,14 +101,27 @@ def _get_client():
             "GEMINI_API_KEY is not set. Add it to a .env file in week3/ "
             "(or export it). See week3/README.md.")
     if _client is None:
-        # pyrefly: ignore[missing-attribute] -- guarded by _HAS_GENAI above
-        _client = genai.Client(api_key=GEMINI_API_KEY)
+        ctx = _ssl_context()
+        if ctx is not None:
+            # client_args/async_client_args are forwarded to httpx.Client —
+            # httpx 0.28 dropped implicit SSL_CERT_FILE support, so the
+            # custom context must be passed explicitly.
+            # pyrefly: ignore[missing-attribute] -- guarded by _HAS_GENAI above
+            options = types.HttpOptions(
+                client_args={"verify": ctx},
+                async_client_args={"verify": ctx},
+            )
+            # pyrefly: ignore[missing-attribute] -- guarded by _HAS_GENAI above
+            _client = genai.Client(api_key=GEMINI_API_KEY, http_options=options)
+        else:
+            # pyrefly: ignore[missing-attribute] -- guarded by _HAS_GENAI above
+            _client = genai.Client(api_key=GEMINI_API_KEY)
     return _client
 
 
 def generate(prompt: str, *, model: str = CHAT_MODEL, temperature: float = 0.2,
              retries: int = 4, json_mode: bool = False) -> str:
-    """Call Gemini with exponential backoff on transient errors.
+    """Call Gemini with quota-aware backoff on transient errors.
 
     Args:
         prompt: the text prompt.
@@ -91,15 +131,20 @@ def generate(prompt: str, *, model: str = CHAT_MODEL, temperature: float = 0.2,
         retries: attempts before giving up.
         json_mode: if True, ask Gemini to return strict JSON.
 
-    WHY exponential backoff: the Gemini free tier rate-limits (HTTP 429).
-    Retrying immediately just gets limited again — so each retry waits twice as
-    long as the last (2s, 4s, 8s, 16s).
+    Retry policy (WHY it is quota-aware, not blind exponential):
+      - PER-DAY quota exhausted -> raise IMMEDIATELY. Every retry is another
+        metered request that cannot succeed until the daily reset — blind
+        retries were literally spending quota on guaranteed failures.
+      - Per-minute 429 -> the error carries the server's own retryDelay;
+        honour it instead of guessing with 2^attempt.
+      - anything else -> classic exponential backoff (2s, 4s, 8s, 16s).
 
     Returns:
         The model's text response.
 
     Raises:
-        RuntimeError: if every retry fails.
+        RuntimeError: on daily-quota exhaustion (fail-fast) or if every
+            retry fails.
     """
     client = _get_client()
     # pyrefly: ignore[missing-attribute] -- guarded via _get_client() above
@@ -118,9 +163,27 @@ def generate(prompt: str, *, model: str = CHAT_MODEL, temperature: float = 0.2,
             return response.text
         except Exception as e:  # noqa: BLE001 - the SDK raises many error types
             last_error = str(e)
-            wait = 2 ** attempt
+
+            # Daily free-tier quota ("...PerDay...FreeTier") resets at
+            # midnight Pacific — retrying now burns MORE quota for nothing.
+            if "RESOURCE_EXHAUSTED" in last_error and "PerDay" in last_error:
+                raise RuntimeError(
+                    f"Gemini DAILY free-tier quota exhausted for {model} — "
+                    "not retrying (each retry is another metered request). "
+                    "Options: set GEMINI_MODEL to a model with separate "
+                    "quota (e.g. gemini-flash-lite-latest), or wait for the "
+                    f"daily reset. ({last_error[:200]})") from e
+
+            # Per-minute 429s include the server's suggested retryDelay —
+            # use it (capped) rather than a guessed exponential wait.
+            delay_match = re.search(r"retryDelay['\"]?\s*:\s*['\"]?(\d+)",
+                                    last_error)
+            if delay_match and "RESOURCE_EXHAUSTED" in last_error:
+                wait = min(int(delay_match.group(1)) + 1, 90)
+            else:
+                wait = 2 ** attempt
             logger.warning("Gemini call attempt %d/%d failed: %s — retry in %ds",
-                           attempt, retries, last_error, wait)
+                           attempt, retries, last_error[:200], wait)
             time.sleep(wait)
 
     raise RuntimeError(f"Gemini call failed after {retries} attempts ({last_error})")

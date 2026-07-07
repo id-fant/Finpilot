@@ -257,6 +257,19 @@ def execute_signal_orders(target_date: str | None = None) -> dict:
         # Every verdict is journalled — the agent must be auditable. The gate
         # fails OPEN (verdict None = proceed full size): OrderManager's
         # deterministic caps below remain the real safety rails.
+
+        # A same-day VETO is final. A vetoed signal has no Order row, so the
+        # dedup above can't catch it — without this check every supervisor
+        # cycle would re-ask the LLM (a metered request) and write a
+        # duplicate VETO journal row for the same trade.
+        if JournalEntry.objects.filter(
+                stage="analyst", symbol=signal.stock.symbol,
+                decision="VETO", created_at__date=when).exists():
+            logger.debug("execute_signal_orders: %s already vetoed today — "
+                         "skipping", signal.stock.symbol)
+            vetoed += 1
+            continue
+
         budget = None
         verdict = _analyst_gate(signal, open_symbols)
         if verdict is not None:

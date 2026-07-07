@@ -272,6 +272,7 @@ function App() {
           {view === 'Simulation' && (
             <MonteCarloView stocks={visibleStocks} />
           )}
+          {view === 'Journal' && <JournalView />}
           {view === 'News & Insights' && <NewsView stocks={visibleStocks} />}
           {view === 'Alerts' && <AlertsView />}
           {view === 'Settings' && <SettingsView />}
