@@ -221,7 +221,162 @@ class ExplainSignalView(APIView):
             "price": str(signal.price),  # Decimal -> str for JSON
             "rsi": signal.rsi,
             "macd": signal.macd,
+            "ml_prob": signal.ml_prob,  # meta-model P(clears costs), nullable
             "technical_reason": signal.reason,
             "explanation": explanation,
             "cached": was_cached,
         }
+
+
+class RefreshSignalsView(APIView):
+    """POST /api/signals/refresh/ — run today's signal generation, now.
+
+    Fires the production task (`generate_daily_signals`) on a background
+    thread via portfolio/runner.py and returns immediately — the task takes
+    minutes when LLM enrichment runs, far beyond any sane HTTP timeout. The
+    dashboard polls /api/system/ for completion and the Journal for the
+    outcome.
+
+    Returns 202 (started), 409 (already running), or 403 (see
+    runner.action_allowed — DEBUG or X-Actions-Token required).
+    """
+
+    def post(self, request):
+        from portfolio import runner
+        if not runner.action_allowed(request):
+            return Response(
+                {"error": "actions are disabled — set ACTIONS_TOKEN and send "
+                          "X-Actions-Token, or run with DEBUG=True"},
+                status=status.HTTP_403_FORBIDDEN)
+        from .tasks import generate_daily_signals
+        state = runner.launch("refresh-signals", generate_daily_signals)
+        logger.info("RefreshSignalsView: %s", state)
+        return Response(
+            {"action": "refresh-signals", "status": state},
+            status=(status.HTTP_202_ACCEPTED if state == "started"
+                    else status.HTTP_409_CONFLICT))
+
+
+class NewsFeedView(APIView):
+    """GET /api/signals/news/?symbol=... — real market headlines.
+
+    No symbol → the broad Zerodha Pulse market feed. A symbol → that stock's
+    Yahoo Finance items + Pulse headlines naming it. Backed by week3's
+    `llm.news.news_items` (yfinance + Pulse RSS). Cached 15 min because the
+    upstream fetch is slow (per-ticker yfinance + RSS parse) and headlines
+    don't churn faster than that.
+
+    Returns:
+      200 — { scope, symbol, count, items: [{title, link, source}] }
+      503 — week3 news layer not importable
+    """
+
+    CACHE_TTL = 60 * 15
+
+    def get(self, request):
+        raw = (request.query_params.get("symbol") or "").strip()
+        # Normalise: bare "RELIANCE" → "RELIANCE.NS"; blank/"market" → feed.
+        is_market = not raw or raw.lower() == "market"
+        symbol = None if is_market else (raw if raw.endswith(".NS") else f"{raw}.NS")
+
+        cache_key = f"news:{symbol or 'market'}"
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return Response(cached)
+
+        try:
+            from llm.news import news_items
+        except ImportError as e:
+            logger.error("NewsFeedView: news layer unavailable — %s", e)
+            return Response(
+                {"error": "news layer not installed. Run: "
+                          "pip install -r week3/requirements.txt"},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+        try:
+            items = news_items(symbol, limit=15)
+        except Exception as e:  # noqa: BLE001 - news is best-effort, never 500
+            logger.warning("NewsFeedView: fetch failed for %s — %s", symbol, e)
+            items = []
+
+        payload = {
+            "scope": "market" if is_market else "symbol",
+            "symbol": symbol,
+            "count": len(items),
+            "items": items,
+        }
+        # Only cache non-empty results — an empty list is usually a transient
+        # network blip; don't pin "no news" for 15 minutes.
+        if items:
+            cache.set(cache_key, payload, self.CACHE_TTL)
+        logger.info("NewsFeedView: %s → %d item(s)", cache_key, len(items))
+        return Response(payload)
+
+
+class AskSignalView(APIView):
+    """POST /api/signals/<symbol>/ask/ — multi-agent Q&A about one stock.
+
+    Body: {"question": "..."}. Routes the question through week3's
+    multi-agent explainer (router -> technical/news/fundamentals specialists
+    -> synthesis) with the stock's latest signal as shared context. This is
+    the endpoint that finally puts llm/multi_agent.py on screen.
+
+    Same failure contract as ExplainSignalView: 404 no signal, 400 empty
+    question, 502 LLM failure, 503 week3 not installed.
+    """
+
+    def post(self, request, symbol):
+        question = (request.data.get("question") or "").strip()
+        if not question:
+            return Response({"error": "body must include a 'question'"},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        signal = (
+            Signal.objects
+            .filter(stock__symbol__in=[symbol, f"{symbol}.NS"])
+            .select_related("stock")
+            .order_by("-date")
+            .first()
+        )
+        if signal is None:
+            return Response({"error": f"no signal found for '{symbol}'"},
+                            status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            from llm.multi_agent import answer as _answer
+            from llm.news import headlines_for
+        except ImportError as e:
+            logger.error("AskSignalView: LLM unavailable — %s", e)
+            return Response(
+                {"error": "LLM layer not installed. Run: "
+                          "pip install -r week3/requirements.txt"},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+        headlines: list[str] = []
+        try:
+            headlines = headlines_for(signal.stock.symbol, limit=10)
+        except Exception as e:  # noqa: BLE001 - news is best-effort context
+            logger.warning("AskSignalView: headlines unavailable — %s", e)
+
+        context = {
+            "symbol": signal.stock.symbol,
+            "technical": (f"{signal.signal_type} on {signal.date} at "
+                          f"₹{signal.price} — {signal.reason}"),
+            "headlines": headlines,
+        }
+        try:
+            result = _answer(question, context)
+        except RuntimeError as e:
+            logger.error("AskSignalView: multi-agent failed for %s — %s",
+                         signal.stock.symbol, e)
+            return Response({"error": str(e)},
+                            status=status.HTTP_502_BAD_GATEWAY)
+
+        logger.info("AskSignalView: %s answered via %s",
+                    signal.stock.symbol, result.get("agents_used"))
+        return Response({
+            "symbol": signal.stock.symbol,
+            "question": question,
+            "answer": result.get("answer", ""),
+            "agents_used": result.get("agents_used", []),
+        })

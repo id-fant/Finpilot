@@ -80,6 +80,31 @@ class OrderHistoryView(generics.ListAPIView):
         return response
 
 
+class ExecuteOrdersView(APIView):
+    """POST /api/portfolio/execute-orders/ — route today's signals, now.
+
+    Background-threaded via portfolio/runner.py, same contract as
+    /api/signals/refresh/: 202 started / 409 already running / 403 denied.
+    Note the gates still apply — this only runs the same production task the
+    scheduler would; it cannot bypass the ML gate, the analyst, or the caps.
+    """
+
+    def post(self, request):
+        from . import runner
+        if not runner.action_allowed(request):
+            return Response(
+                {"error": "actions are disabled — set ACTIONS_TOKEN and send "
+                          "X-Actions-Token, or run with DEBUG=True"},
+                status=status.HTTP_403_FORBIDDEN)
+        from .tasks import execute_signal_orders
+        state = runner.launch("execute-orders", execute_signal_orders)
+        logger.info("ExecuteOrdersView: %s", state)
+        return Response(
+            {"action": "execute-orders", "status": state},
+            status=(status.HTTP_202_ACCEPTED if state == "started"
+                    else status.HTTP_409_CONFLICT))
+
+
 class JournalEntryListView(generics.ListAPIView):
     """GET /api/portfolio/journal/ — the agent's decision diary, newest first.
 

@@ -205,6 +205,12 @@ ANALYST_GATE = os.environ.get("ANALYST_GATE", "auto").lower()
 ML_GATE = os.environ.get("ML_GATE", "auto").lower()
 ML_GATE_THRESHOLD = float(os.environ.get("ML_GATE_THRESHOLD", "0"))
 
+# ── Dashboard actions (POST /api/signals/refresh/, /api/portfolio/execute-orders/) ──
+# In DEBUG the buttons just work. Deployed, a request must send
+# X-Actions-Token matching this value — an open POST that can trigger trades
+# is not acceptable on a public URL. Empty + not DEBUG = actions disabled.
+ACTIONS_TOKEN = os.environ.get("ACTIONS_TOKEN", "")
+
 # Make week4/ importable from week2 code (signals/, portfolio/). The broker
 # package is deliberately framework-free (see HANDOFF §5) and lives outside
 # week2/, so we extend sys.path here — settings.py is the canonical place to

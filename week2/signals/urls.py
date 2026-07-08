@@ -2,15 +2,21 @@
 from django.urls import path
 
 from .views import (
-    ExplainSignalView, LatestSignalsView, SignalHistoryView, StockListView,
+    AskSignalView, ExplainSignalView, LatestSignalsView, NewsFeedView,
+    RefreshSignalsView, SignalHistoryView, StockListView,
 )
 
 urlpatterns = [
     path("stocks/", StockListView.as_view(), name="stock-list"),
     path("latest/", LatestSignalsView.as_view(), name="latest-signals"),
-    # WHY this route is LAST: Django matches patterns top-down. A bare
-    # <symbol> would otherwise also match "stocks" and "latest" and shadow
-    # them. Specific routes first, the catch-all parameter route last.
+    # Real market news (Yahoo + Zerodha Pulse) — before the <symbol> catch-all.
+    path("news/", NewsFeedView.as_view(), name="news-feed"),
+    # POST — dashboard "run now" action (202/409/403, see the view).
+    path("refresh/", RefreshSignalsView.as_view(), name="signals-refresh"),
+    # WHY these routes are LAST: Django matches patterns top-down. A bare
+    # <symbol> would otherwise also match "stocks"/"latest"/"refresh" and
+    # shadow them. Specific routes first, the catch-all parameter routes last.
     path("<str:symbol>/explain/", ExplainSignalView.as_view(), name="signal-explain"),
+    path("<str:symbol>/ask/", AskSignalView.as_view(), name="signal-ask"),
     path("<str:symbol>/", SignalHistoryView.as_view(), name="signal-history"),
 ]

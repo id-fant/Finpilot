@@ -57,13 +57,39 @@ _pulse_cache: tuple[float, Any] | None = None  # (fetched_at, parsed feed)
 
 
 def _fetch_pulse_feed() -> Any:
-    """Parsed Pulse RSS feed, cached across symbols for _PULSE_CACHE_TTL."""
+    """Parsed Pulse RSS feed, cached across symbols for _PULSE_CACHE_TTL.
+
+    WHY the manual fetch: feedparser calls urllib with the default TLS
+    context, which under antivirus HTTPS interception (Avast) either can't
+    find the re-signing root or — on Python 3.13 — rejects it as not
+    strict-compliant. We fetch the bytes ourselves through the same relaxed
+    context the Gemini client uses (`llm._ssl_context`), then hand the bytes
+    to feedparser. On a machine without interception `_ssl_context()` returns
+    None and we fall back to feedparser's own fetch.
+    """
     global _pulse_cache
     now = time.monotonic()
     if _pulse_cache is not None and now - _pulse_cache[0] < _PULSE_CACHE_TTL:
         return _pulse_cache[1]
-    # pyrefly: ignore[missing-attribute] -- guarded by _HAS_FEEDPARSER at call site
-    feed = feedparser.parse(PULSE_FEED)
+
+    ctx = None
+    try:
+        from . import _ssl_context
+        ctx = _ssl_context()
+    except Exception:  # noqa: BLE001 - fall back to plain fetch
+        ctx = None
+
+    if ctx is not None:
+        import urllib.request
+        req = urllib.request.Request(
+            PULSE_FEED, headers={"User-Agent": "Mozilla/5.0 (FinPilot)"})
+        with urllib.request.urlopen(req, context=ctx, timeout=15) as resp:
+            data = resp.read()
+        # pyrefly: ignore[missing-attribute] -- guarded by _HAS_FEEDPARSER at call site
+        feed = feedparser.parse(data)
+    else:
+        # pyrefly: ignore[missing-attribute] -- guarded by _HAS_FEEDPARSER at call site
+        feed = feedparser.parse(PULSE_FEED)
     _pulse_cache = (now, feed)
     return feed
 
@@ -113,6 +139,79 @@ def _pulse_headlines(symbol_stem: str, limit: int, seen: set[str]) -> list[str]:
             out.append(title)
             if len(out) >= limit:
                 break
+    return out
+
+
+def _pulse_items(limit: int, symbol_stem: str | None = None) -> list[dict]:
+    """Pulse entries as {title, link, source}, optionally filtered by stem.
+
+    The richer sibling of `_pulse_headlines` — keeps the LINK so the dashboard
+    News view can open the source article (headlines_for() drops it because
+    the sentiment/explainer callers only need the title string).
+    """
+    if not _HAS_FEEDPARSER:
+        return []
+    try:
+        feed = _fetch_pulse_feed()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("news: Pulse RSS fetch failed — %s", e)
+        return []
+    needle = symbol_stem.upper() if symbol_stem else None
+    out: list[dict] = []
+    for entry in feed.entries[:MAX_PULSE_SCAN]:
+        title = (entry.get("title") or "").strip()
+        if not title:
+            continue
+        if needle and needle not in title.upper():
+            continue
+        out.append({"title": title, "link": entry.get("link", ""),
+                    "source": "Zerodha Pulse"})
+        if len(out) >= limit:
+            break
+    return out
+
+
+def news_items(symbol: str | None = None, *, limit: int = 15) -> list[dict]:
+    """Recent news as [{title, link, source}] — the dashboard News feed.
+
+    symbol=None returns the broad Indian-market Pulse feed (unfiltered); a
+    symbol returns that stock's Yahoo Finance items plus Pulse headlines that
+    name it. De-duplicated by title, best-effort (never raises — an empty list
+    means "no news available", the same contract as headlines_for).
+    """
+    if not symbol:
+        return _pulse_items(limit)
+
+    items: list[dict] = []
+    if _HAS_YF:
+        try:
+            # pyrefly: ignore[missing-attribute] -- guarded by _HAS_YF above
+            raw = yf.Ticker(symbol).news or []
+        except Exception as e:  # noqa: BLE001 - yfinance raises many error types
+            logger.warning("news: yfinance.news(%s) failed — %s", symbol, e)
+            raw = []
+        for it in raw[:limit]:
+            content = it.get("content") or {}
+            title = (content.get("title") or it.get("title") or "").strip()
+            link = ((content.get("clickThroughUrl") or {}).get("url")
+                    or (content.get("canonicalUrl") or {}).get("url")
+                    or it.get("link") or "")
+            if title:
+                items.append({"title": title, "link": link,
+                              "source": "Yahoo Finance"})
+
+    items.extend(_pulse_items(limit, symbol.split(".")[0]))
+
+    seen: set[str] = set()
+    out: list[dict] = []
+    for it in items:
+        if it["title"] in seen:
+            continue
+        seen.add(it["title"])
+        out.append(it)
+        if len(out) >= limit:
+            break
+    logger.info("news_items(%s): %d item(s)", symbol or "market", len(out))
     return out
 
 

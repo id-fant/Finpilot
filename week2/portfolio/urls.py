@@ -2,13 +2,15 @@
 from django.urls import path
 
 from .views import (
-    JournalEntryListView, MonteCarloProjectionView, OrderHistoryView,
-    PortfolioView,
+    ExecuteOrdersView, JournalEntryListView, MonteCarloProjectionView,
+    OrderHistoryView, PortfolioView,
 )
 
 urlpatterns = [
     path("", PortfolioView.as_view(), name="portfolio"),
     path("orders/", OrderHistoryView.as_view(), name="order-history"),
+    # POST — dashboard "run now" action (202/409/403, see the view).
+    path("execute-orders/", ExecuteOrdersView.as_view(), name="execute-orders"),
     # GET /api/portfolio/journal/?stage=...&symbol=... — agent decision diary.
     path("journal/", JournalEntryListView.as_view(), name="journal"),
     # GET /api/portfolio/projection/?symbol=...&capital=...&horizon_days=...

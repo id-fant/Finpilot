@@ -126,3 +126,38 @@ def test_execute_signal_orders_books_position_on_fill(monkeypatch):
     summary2 = execute_signal_orders()
     assert summary2["skipped"] == 1
     assert Position.objects.filter(stock=stock).count() == 1
+
+
+@pytest.mark.django_db
+def test_system_endpoint_reports_full_shape(client):
+    """/api/system/ is the control room — every block the dashboard reads
+    must be present even on an empty database."""
+    resp = client.get("/api/system/")
+    assert resp.status_code == 200
+    body = resp.json()
+    for key in ("broker", "gates", "data", "risk", "actions"):
+        assert key in body, f"missing block: {key}"
+    assert "analyst" in body["gates"] and "ml" in body["gates"]
+
+
+@pytest.mark.django_db
+def test_actions_denied_outside_debug_without_token(client, settings):
+    """The run-now endpoints trigger real work (potentially real orders on
+    BROKER=kite) — outside DEBUG they must refuse requests with no token.
+    WHY this matters: a 403 here is the only thing between a public deploy
+    and anyone on the internet firing trades."""
+    settings.DEBUG = False
+    settings.ACTIONS_TOKEN = ""  # not configured -> deny, never allow
+    assert client.post("/api/signals/refresh/").status_code == 403
+    assert client.post("/api/portfolio/execute-orders/").status_code == 403
+
+
+@pytest.mark.django_db
+def test_quant_ml_model_404_when_artifact_missing(client, monkeypatch, tmp_path):
+    """CI never trains the model (artifacts are git-ignored) — the endpoint
+    must 404 cleanly, not 500."""
+    from portfolio.quant_views import MLModelView
+    monkeypatch.setattr(MLModelView, "META", tmp_path / "missing.json")
+    resp = client.get("/api/quant/ml-model/")
+    assert resp.status_code == 404
+    assert "error" in resp.json()

@@ -3,11 +3,21 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-<title>Cardinal — Financial Dashboard</title>
+<!-- WHY no-cache on the HTML itself: `python -m http.server` sends no cache
+     headers, so the browser holds this file forever. But the ?v= cache-bust
+     on the assets below only takes effect once the browser RE-READS this
+     file — a chicken-and-egg trap where bumping the version does nothing
+     because the stale index.html still points at the old versions. Forcing
+     revalidation of the HTML (not the assets — those are versioned) breaks
+     the loop: a version bump is now picked up on the next normal reload. -->
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+<meta http-equiv="Pragma" content="no-cache" />
+<meta http-equiv="Expires" content="0" />
+<title>FinPilot — Agentic Trading Dashboard</title>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
-<link rel="stylesheet" href="styles.css?v=finpilot4" />
+<link rel="stylesheet" href="styles.css?v=finpilot8" />
 </head>
 <body>
 <div id="root"></div>
@@ -24,14 +34,17 @@
      transform plus modern-syntax lowering (optional chaining, ??, etc).
      Without it some Babel-standalone builds default to no preset and choke
      on JSX. -->
-<script type="text/babel" data-presets="env,react" src="data.jsx?v=finpilot4"></script>
-<script type="text/babel" data-presets="env,react" src="charts.jsx?v=finpilot4"></script>
-<script type="text/babel" data-presets="env,react" src="components.jsx?v=finpilot4"></script>
-<script type="text/babel" data-presets="env,react" src="views.jsx?v=finpilot4"></script>
-<script type="text/babel" data-presets="env,react" src="explainer.jsx?v=finpilot4"></script>
+<script type="text/babel" data-presets="env,react" src="data.jsx?v=finpilot8"></script>
+<script type="text/babel" data-presets="env,react" src="components.jsx?v=finpilot8"></script>
+<script type="text/babel" data-presets="env,react" src="views.jsx?v=finpilot8"></script>
+<script type="text/babel" data-presets="env,react" src="explainer.jsx?v=finpilot8"></script>
 <!-- MC panel comes after views.jsx so it can reference PageHead at render time. -->
-<script type="text/babel" data-presets="env,react" src="mc_panel.jsx?v=finpilot4"></script>
-<script type="text/babel" data-presets="env,react" src="journal_panel.jsx?v=finpilot4"></script>
-<script type="text/babel" data-presets="env,react" src="app.jsx?v=finpilot4"></script>
+<script type="text/babel" data-presets="env,react" src="mc_panel.jsx?v=finpilot8"></script>
+<script type="text/babel" data-presets="env,react" src="journal_panel.jsx?v=finpilot8"></script>
+<script type="text/babel" data-presets="env,react" src="system_panel.jsx?v=finpilot8"></script>
+<script type="text/babel" data-presets="env,react" src="quant_panel.jsx?v=finpilot8"></script>
+<script type="text/babel" data-presets="env,react" src="stock_panel.jsx?v=finpilot8"></script>
+<script type="text/babel" data-presets="env,react" src="news_panel.jsx?v=finpilot8"></script>
+<script type="text/babel" data-presets="env,react" src="app.jsx?v=finpilot8"></script>
 </body>
 </html>

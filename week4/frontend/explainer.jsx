@@ -49,6 +49,7 @@ function useExplanation(symbol) {
             technical_reason: body.technical_reason,
             price: body.price,
             rsi: body.rsi,
+            ml_prob: body.ml_prob,
           },
         });
       })
@@ -110,6 +111,15 @@ function SignalExplainerPanel({ symbol, onClose }) {
               <div className="lbl">RSI</div>
               <div className="val mono">
                 {typeof meta.rsi === 'number' ? meta.rsi.toFixed(1) : '—'}
+              </div>
+            </div>
+            <div>
+              {/* Meta-labeling model's score — only BUY entries get scored,
+                  so a dash here is normal for HOLD/SELL. */}
+              <div className="lbl">P(profit)</div>
+              <div className="val mono">
+                {typeof meta.ml_prob === 'number'
+                  ? `${(meta.ml_prob * 100).toFixed(0)}%` : '—'}
               </div>
             </div>
           </div>
