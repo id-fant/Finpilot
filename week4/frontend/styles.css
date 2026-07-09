@@ -119,7 +119,10 @@ body {
 }
 .mono { font-family: var(--num); font-variant-numeric: tabular-nums; }
 .tnum { font-variant-numeric: tabular-nums; }
-button { font-family: inherit; cursor: pointer; }
+/* WHY color: inherit — a bare <button> otherwise uses the UA default text
+   colour (black), which is unreadable on the dark surfaces. Buttons that want
+   their own colour (.btn, .nav-item, .chip, …) still set it explicitly. */
+button { font-family: inherit; cursor: pointer; color: inherit; }
 input, select { font-family: inherit; }
 a { color: var(--accent); }
 
@@ -300,9 +303,11 @@ a { color: var(--accent); }
 .sig-card {
   display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 14px;
   padding: var(--rowpad); border: 1px solid var(--line); border-radius: var(--radius-sm);
-  background: var(--card-2); cursor: pointer; transition: border-color 0.14s, background 0.14s;
+  background: var(--card-2); color: var(--text); cursor: pointer;
+  transition: border-color 0.14s, background 0.14s;
   width: 100%; text-align: left;
 }
+.sig-sym { color: var(--text); }
 .sig-card:hover { border-color: var(--line-strong); background: var(--card-hover); }
 .sig-card.act-buy { border-left: 3px solid var(--green); }
 .sig-card.act-sell { border-left: 3px solid var(--red); }
