@@ -153,6 +153,60 @@ def test_actions_denied_outside_debug_without_token(client, settings):
 
 
 @pytest.mark.django_db
+def test_portfolio_risk_empty_book(client):
+    """No open positions -> a calm 200 with open_positions=0, never an error."""
+    resp = client.get("/api/portfolio/risk/")
+    assert resp.status_code == 200
+    assert resp.json()["open_positions"] == 0
+
+
+@pytest.mark.django_db
+def test_portfolio_risk_historical_simulation_invariants(client, monkeypatch):
+    """The VaR math must satisfy its defining invariants on synthetic data:
+    CVaR >= VaR > 0, per-position contributions sum to CVaR (component CVaR
+    is linear by construction), and the book value matches qty x last close.
+    No network — the price panel is monkeypatched."""
+    import numpy as np
+    import pandas as pd
+    from portfolio import quant_views
+
+    idx = pd.bdate_range(end=pd.Timestamp.today().normalize(), periods=250)
+
+    def frame(seed):
+        r = np.random.default_rng(seed).normal(0.0004, 0.015, 250)
+        close = 100 * np.exp(np.cumsum(r))
+        return pd.DataFrame({"Close": close}, index=idx)
+
+    panel = {"AAA.NS": frame(1), "BBB.NS": frame(2)}
+    monkeypatch.setattr(quant_views, "_tracked_panel", lambda: panel)
+
+    for sym in panel:
+        stock = Stock.objects.create(symbol=sym, name=sym, sector="Test")
+        Position.objects.create(stock=stock, quantity=10,
+                                avg_entry_price=Decimal("100.00"),
+                                entry_date=date.today())
+
+    resp = client.get("/api/portfolio/risk/")
+    assert resp.status_code == 200
+    d = resp.json()
+
+    assert d["open_positions"] == 2
+    expected_book = sum(10 * float(panel[s]["Close"].iloc[-1]) for s in panel)
+    assert abs(d["book_value_rs"] - expected_book) < 0.05
+
+    # Defining property of expected shortfall: tail average >= tail cutoff.
+    assert d["cvar95_rs"] >= d["var95_rs"] > 0
+    assert d["var99_rs"] >= d["var95_rs"]
+    assert d["worst_day_rs"] >= d["cvar95_rs"]
+
+    # Component CVaR must sum (to rounding) to the portfolio CVaR.
+    total_contrib = sum(c["cvar_contrib_rs"] for c in d["contributions"])
+    assert abs(total_contrib - d["cvar95_rs"]) < 0.05, (
+        f"contributions {total_contrib} != CVaR {d['cvar95_rs']}")
+    assert not d["thin_history"] and d["days_used"] > 200
+
+
+@pytest.mark.django_db
 def test_quant_ml_model_404_when_artifact_missing(client, monkeypatch, tmp_path):
     """CI never trains the model (artifacts are git-ignored) — the endpoint
     must 404 cleanly, not 500."""

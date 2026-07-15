@@ -80,6 +80,128 @@ class OrderHistoryView(generics.ListAPIView):
         return response
 
 
+class PortfolioRiskView(APIView):
+    """GET /api/portfolio/risk/ — 1-day VaR / CVaR for the open book.
+
+    Method: HISTORICAL SIMULATION. Apply each of the last ~250 daily return
+    vectors to TODAY's position values and read loss quantiles off the
+    resulting P&L distribution. WHY not parametric (variance-covariance):
+    that assumes normal returns; equity returns have fat tails, and a risk
+    number that ignores the tails understates exactly the thing it exists to
+    measure. Non-parametric keeps whatever tails the last year actually had —
+    the same honesty argument as the orchestrator's bootstrap Monte Carlo.
+
+    Also reports per-position CVaR contributions (each position's average
+    loss on the portfolio's tail days) — these sum to the portfolio CVaR by
+    construction, so "which holding is my risk?" has an exact answer.
+
+    Prices come from the same cached 1y panel the Quant Lab uses — zero extra
+    fetch cost when that cache is warm.
+    """
+
+    MIN_DAYS = 60  # below this, quantiles are noise — flag it
+
+    def get(self, request):  # pyrefly: ignore[unused-parameter]
+        positions = list(
+            Position.objects.filter(is_open=True).select_related("stock"))
+        if not positions:
+            return Response({
+                "open_positions": 0,
+                "note": "no open positions — nothing at risk",
+            })
+
+        # Late import + module-qualified call so tests can monkeypatch the
+        # panel without network.
+        from . import quant_views
+        try:
+            panel = quant_views._tracked_panel()
+        except RuntimeError as e:
+            return Response({"error": str(e)},
+                            status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+        # Mark each position at its last close; positions whose symbol has no
+        # price data fall back to entry price and are disclosed as unpriced.
+        syms: list[str] = []
+        values: list[float] = []
+        unpriced: list[str] = []
+        for p in positions:
+            sym = p.stock.symbol
+            if sym in panel and len(panel[sym]) > 1:
+                mark = float(panel[sym]["Close"].iloc[-1])
+                syms.append(sym)
+            else:
+                mark = float(p.avg_entry_price)
+                unpriced.append(sym)
+                logger.warning("PortfolioRiskView: no prices for %s — marked "
+                               "at entry, excluded from simulation", sym)
+                continue
+            values.append(float(p.quantity) * mark)
+
+        if not syms:
+            return Response({"error": "no priced positions to simulate"},
+                            status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+        import pandas as pd
+        closes = pd.DataFrame({s: panel[s]["Close"] for s in syms})
+        rets = closes.pct_change().dropna()
+        v = np.array(values)
+        book = float(v.sum())
+
+        # P&L per historical day if that day's returns hit today's book.
+        pnl = rets.to_numpy() @ v
+
+        q05 = float(np.percentile(pnl, 5))
+        q01 = float(np.percentile(pnl, 1))
+        tail = pnl[pnl <= q05]
+        var95 = -q05
+        cvar95 = float(-tail.mean())
+        worst_i = int(np.argmin(pnl))
+
+        # Component CVaR: each position's mean loss on the portfolio's tail
+        # days. Linear in positions, so the components sum to the total.
+        tail_mask = pnl <= q05
+        rmat = rets.to_numpy()[tail_mask]
+        comp = -(rmat * v).mean(axis=0)
+        # Sort the tuples BEFORE building dicts — sorting dicts on a
+        # str|float-valued key trips the checkers (same as MarkowitzWeights).
+        ranked = sorted(zip(syms, v, comp), key=lambda t: -float(t[2]))
+        contributions = [
+            {"symbol": s, "value_rs": round(float(val), 2),
+             "cvar_contrib_rs": round(float(c), 2),
+             "share_pct": round(float(c) / cvar95 * 100, 1) if cvar95 else 0.0}
+            for s, val, c in ranked
+        ]
+
+        # Diversification: what standalone VaRs add up to vs the book's VaR.
+        standalone = sum(
+            -float(np.percentile(rets[s].to_numpy() * val, 5))
+            for s, val in zip(syms, v))
+
+        payload = {
+            "open_positions": len(positions),
+            "book_value_rs": round(book, 2),
+            "method": "historical simulation — 1y daily returns applied to "
+                      "current position values, marked at last close",
+            "days_used": len(rets),
+            "thin_history": len(rets) < self.MIN_DAYS,
+            "var95_rs": round(var95, 2),
+            "var95_pct": round(var95 / book * 100, 2),
+            "cvar95_rs": round(cvar95, 2),
+            "cvar95_pct": round(cvar95 / book * 100, 2),
+            "var99_rs": round(-q01, 2),
+            "worst_day_rs": round(float(-pnl[worst_i]), 2),
+            "worst_day_date": str(rets.index[worst_i].date()),  # pyright: ignore[reportAttributeAccessIssue]
+            "annualised_vol_pct": round(float(pnl.std() / book) * 100
+                                        * float(np.sqrt(252)), 2),
+            "diversification_benefit_rs": round(standalone - var95, 2),
+            "contributions": contributions,
+            "unpriced": unpriced,
+        }
+        logger.info("PortfolioRiskView: book ₹%.0f VaR95 ₹%.0f CVaR95 ₹%.0f "
+                    "(%d days)", book, var95, cvar95, len(rets))
+        return Response(payload)
+
+
 class ExecuteOrdersView(APIView):
     """POST /api/portfolio/execute-orders/ — route today's signals, now.
 

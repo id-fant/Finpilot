@@ -230,6 +230,88 @@ function CommandView({ data, actions }) {
   );
 }
 
+// ── Risk card (1-day VaR / CVaR, historical simulation) ────────────────────
+function RiskCard() {
+  const [risk, setRisk] = vUseState(null);
+  const [err, setErr] = vUseState(null);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    fetch(`${window.FINPILOT_API}/portfolio/risk/`)
+      .then(async r => {
+        const body = await r.json().catch(() => null);
+        if (!r.ok) throw new Error((body && body.error) || `HTTP ${r.status}`);
+        return body;
+      })
+      .then(d => { if (!cancelled) setRisk(d); })
+      .catch(e => { if (!cancelled) setErr(e.message); });
+    return () => { cancelled = true; };
+  }, []);
+
+  if (err) return (
+    <div className="card muted" style={{ fontSize: 12.5, color: 'var(--red)' }}>
+      risk: {err}
+    </div>
+  );
+  if (!risk || !risk.open_positions) return null;
+
+  const maxC = Math.max(...risk.contributions.map(c => c.cvar_contrib_rs), 0.01);
+  return (
+    <div className="card">
+      <div className="card-title">Risk — 1-day horizon</div>
+      <div className="card-sub" style={{ marginBottom: 14 }}>
+        historical simulation · {risk.days_used} trading days · marked at last close
+        {risk.thin_history && <span style={{ color: 'var(--amber)' }}> · thin history — treat as indicative</span>}
+      </div>
+      <div className="stat-grid" style={{ marginBottom: 6 }}>
+        <div className="stat">
+          <div className="stat-label">VaR 95%</div>
+          <div className="stat-value neg" style={{ fontSize: 20 }}>{formatINR(risk.var95_rs)}</div>
+          <div className="stat-foot muted">{risk.var95_pct}% of book</div>
+        </div>
+        <div className="stat">
+          <div className="stat-label">CVaR 95% (tail avg)</div>
+          <div className="stat-value neg" style={{ fontSize: 20 }}>{formatINR(risk.cvar95_rs)}</div>
+          <div className="stat-foot muted">{risk.cvar95_pct}% of book</div>
+        </div>
+        <div className="stat">
+          <div className="stat-label">Worst day (1y)</div>
+          <div className="stat-value neg" style={{ fontSize: 20 }}>{formatINR(risk.worst_day_rs)}</div>
+          <div className="stat-foot muted">{risk.worst_day_date}</div>
+        </div>
+        <div className="stat">
+          <div className="stat-label">Annualised vol</div>
+          <div className="stat-value" style={{ fontSize: 20 }}>{risk.annualised_vol_pct}%</div>
+          <div className="stat-foot muted">
+            diversification saves {formatINR(risk.diversification_benefit_rs)}
+          </div>
+        </div>
+      </div>
+      <div className="card-sub" style={{ margin: '8px 0 8px' }}>Where the tail risk sits (CVaR contribution)</div>
+      <div style={{ maxWidth: 480 }}>
+        {risk.contributions.map(c => (
+          <div key={c.symbol} className="row" style={{ alignItems: 'center', gap: 8, padding: '2px 0' }}>
+            <span className="mono muted" style={{ fontSize: 11, width: 100 }}>{stripNS(c.symbol)}</span>
+            <div style={{ flex: 1, height: 8, background: 'var(--line)', borderRadius: 4 }}>
+              <div style={{ width: `${Math.max(0, c.cvar_contrib_rs / maxC) * 100}%`, height: 8,
+                            background: 'var(--red)', borderRadius: 4, opacity: 0.75 }} />
+            </div>
+            <span className="mono muted" style={{ fontSize: 11, width: 108, textAlign: 'right' }}>
+              {formatINR(c.cvar_contrib_rs)} · {c.share_pct}%
+            </span>
+          </div>
+        ))}
+      </div>
+      <p className="muted" style={{ fontSize: 11, marginTop: 12, lineHeight: 1.5 }}>
+        VaR 95% = the loss exceeded on the worst 5% of days; CVaR = the average
+        of those tail days (contributions sum to it exactly). Non-parametric —
+        no normality assumed, so last year's fat tails are kept, and next
+        year's may be fatter.
+      </p>
+    </div>
+  );
+}
+
 // ── Positions ────────────────────────────────────────────────────────────────
 function PositionsView({ data }) {
   const positions = data.positions;
@@ -276,6 +358,7 @@ function PositionsView({ data }) {
               </div>
             </div>
           </div>
+          <RiskCard />
           <div className="card">
             <div className="card-title" style={{ marginBottom: 14 }}>Allocation</div>
             <div className="donut-wrap">
