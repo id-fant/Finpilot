@@ -6,7 +6,7 @@
 //
 // Exported on window: SystemView
 
-const { useState: sUseState, useEffect: sUseEffect } = React;
+const { useState: sUseState } = React;
 
 const SYS_POLL_MS = 10_000;
 
@@ -60,23 +60,7 @@ function ActionButton({ name, label, path, running, onLaunched }) {
 }
 
 function SystemView() {
-  const [sys, setSys] = sUseState(null);
-  const [error, setError] = sUseState(null);
-
-  async function load() {
-    try {
-      const res = await fetch(`${window.FINPILOT_API}/system/`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      setSys(await res.json());
-      setError(null);
-    } catch (e) { setError(e.message); }
-  }
-
-  sUseEffect(() => {
-    load();
-    const id = setInterval(load, SYS_POLL_MS);
-    return () => clearInterval(id);
-  }, []);
+  const { data: sys, error, refetch: load } = useApi('/system/', { poll: SYS_POLL_MS });
 
   const actions = sys?.actions || {};
   const lastResult = (name) => {

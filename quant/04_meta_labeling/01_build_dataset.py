@@ -43,6 +43,7 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT / "week2"))
 
+from core.costs import zerodha_round_trip_cost         # noqa: E402
 from core.data import fetch_ohlcv                      # noqa: E402
 from core.ml_features import (                          # noqa: E402
     FEATURES, HORIZON_BARS, STOP_PCT, TARGET_PCT,
@@ -69,19 +70,6 @@ NIFTY50 = [
     "TATACONSUM.NS", "TATAMOTORS.NS", "TATASTEEL.NS", "TCS.NS", "TECHM.NS",
     "TITAN.NS", "TRENT.NS", "ULTRACEMCO.NS", "WIPRO.NS",
 ]
-
-
-def zerodha_round_trip_cost(buy_value: float, sell_value: float) -> float:
-    """Zerodha CNC cost stack — matches week2/portfolio/views.py and
-    week1/one_week_simulation.py; the label must price the same friction the
-    live system pays."""
-    stt = (buy_value + sell_value) * 0.001
-    exch = (buy_value + sell_value) * 0.0000325
-    sebi = (buy_value + sell_value) * 0.000001
-    stamp = buy_value * 0.00015
-    gst = (exch + sebi) * 0.18
-    dp = 13.5 * 1.18
-    return stt + exch + sebi + stamp + gst + dp
 
 
 def label_trade(ind: pd.DataFrame, i: int) -> dict | None:

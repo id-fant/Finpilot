@@ -39,6 +39,27 @@ def _is_llm_reason(reason: str) -> bool:
     return bool(reason) and not reason.startswith(("BUY:", "SELL:", "HOLD ("))
 
 
+def _reason_for(stock, result: dict) -> str:
+    """The explanation for today's signal — reused if already paid for.
+
+    WHY reuse: Gemini's free tier is metered PER DAY. The supervisor re-runs
+    the signal task every cycle — re-explaining an unchanged verdict would
+    burn the whole day's quota in two cycles. The Signal row is the cache:
+    same date + same verdict + an LLM-shaped reason ⇒ keep it. A verdict
+    CHANGE (HOLD→BUY) still triggers a fresh explanation.
+    """
+    from .models import Signal
+
+    existing = Signal.objects.filter(stock=stock, date=result["date"]).first()
+    if (existing is not None
+            and existing.signal_type == result["signal"]
+            and _is_llm_reason(existing.reason)):
+        logger.debug("generate_daily_signals: %s reusing today's LLM "
+                     "explanation (verdict unchanged)", stock.symbol)
+        return existing.reason
+    return _enrich_reason(stock.symbol, result)
+
+
 def _enrich_reason(symbol: str, result: dict) -> str:
     """Return the LLM explanation if week3 is wired up; else the technical reason.
 
@@ -127,23 +148,7 @@ def generate_daily_signals() -> dict:
             # stored as NULL, which downstream treats as "unscored", never 0.
             ml_prob = (score_signal(df, result["buy_votes"])
                        if result["signal"] == "BUY" else None)
-            # WHY reuse today's explanation when the verdict is unchanged:
-            # Gemini's free tier is metered PER DAY (e.g. 20 requests). The
-            # supervisor re-runs this task every cycle — re-explaining an
-            # unchanged HOLD each time would burn the whole day's quota in
-            # two cycles. The Signal row is the cache: same date + same
-            # verdict + an LLM-shaped reason ⇒ keep it. A verdict CHANGE
-            # (HOLD→BUY) still triggers a fresh explanation.
-            existing = Signal.objects.filter(
-                stock=stock, date=result["date"]).first()
-            if (existing is not None
-                    and existing.signal_type == result["signal"]
-                    and _is_llm_reason(existing.reason)):
-                reason = existing.reason
-                logger.debug("generate_daily_signals: %s reusing today's "
-                             "LLM explanation (verdict unchanged)", stock.symbol)
-            else:
-                reason = _enrich_reason(stock.symbol, result)
+            reason = _reason_for(stock, result)
             _, created = Signal.objects.update_or_create(
                 stock=stock,
                 date=result["date"],

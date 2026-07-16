@@ -12,7 +12,7 @@
 //
 // Exported on window: QuantView
 
-const { useState: qUseState, useEffect: qUseEffect } = React;
+const { useState: qUseState } = React;
 
 function qFetch(path, set, setErr, setBusy) {
   setBusy?.(true); setErr(null);
@@ -37,9 +37,7 @@ function QErr({ msg }) {
 
 // ── ML model card ────────────────────────────────────────────────────────────
 function MLModelCard() {
-  const [meta, setMeta] = qUseState(null);
-  const [err, setErr] = qUseState(null);
-  qUseEffect(() => { qFetch('/quant/ml-model/', setMeta, setErr); }, []);
+  const { data: meta, error: err } = useApi('/quant/ml-model/');
 
   const imp = meta ? Object.entries(meta.permutation_importance || {})
     .sort((a, b) => b[1] - a[1]) : [];
@@ -82,9 +80,7 @@ function MLModelCard() {
 
 // ── Backtest stats card ──────────────────────────────────────────────────────
 function BacktestCard() {
-  const [data, setData] = qUseState(null);
-  const [err, setErr] = qUseState(null);
-  qUseEffect(() => { qFetch('/quant/backtest-stats/', setData, setErr); }, []);
+  const { data, error: err } = useApi('/quant/backtest-stats/');
 
   return (
     <div className="card">

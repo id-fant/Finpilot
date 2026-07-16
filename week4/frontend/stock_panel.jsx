@@ -14,22 +14,8 @@ function sigColor(t) {
 }
 
 function HistoryTable({ symbol }) {
-  const [rows, setRows] = dUseState(null);
-  const [err, setErr] = dUseState(null);
-
-  dUseEffect(() => {
-    let cancelled = false;
-    setRows(null); setErr(null);
-    fetch(`${window.FINPILOT_API}/signals/${encodeURIComponent(symbol)}/`)
-      .then(async (r) => {
-        const body = await r.json().catch(() => null);
-        if (!r.ok) throw new Error((body && body.error) || `HTTP ${r.status}`);
-        return body;
-      })
-      .then((d) => { if (!cancelled) setRows(Array.isArray(d) ? d : (d.results || [])); })
-      .catch((e) => { if (!cancelled) setErr(e.message); });
-    return () => { cancelled = true; };
-  }, [symbol]);
+  const { data, error: err, loading } = useApi(`/signals/${encodeURIComponent(symbol)}/`);
+  const rows = loading ? null : unwrapDRF(data);
 
   if (err) return <div className="muted" style={{ color: 'var(--red)', fontSize: 12 }}>error: {err}</div>;
   if (!rows) return <div className="muted">loading…</div>;
@@ -145,19 +131,13 @@ function AskBox({ symbol }) {
 }
 
 function StockDetailView() {
-  const [stocks, setStocks] = dUseState([]);
   const [symbol, setSymbol] = dUseState(null);
+  const stocksApi = useApi('/signals/stocks/');
+  const stocks = unwrapDRF(stocksApi.data).map((s) => s.symbol);
 
   dUseEffect(() => {
-    fetch(`${window.FINPILOT_API}/signals/stocks/`)
-      .then((r) => r.json())
-      .then((d) => {
-        const list = (Array.isArray(d) ? d : (d.results || [])).map((s) => s.symbol);
-        setStocks(list);
-        if (list.length && !symbol) setSymbol(list[0]);
-      })
-      .catch(() => {});
-  }, []);
+    if (stocks.length && !symbol) setSymbol(stocks[0]);
+  }, [stocks.length]);
 
   return (
     <div className="view-enter">

@@ -30,11 +30,9 @@ What's NOT exercised:
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import os
 import sys
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -42,7 +40,6 @@ import pandas as pd
 # ── Project layout ───────────────────────────────────────────────────────────
 ROOT = Path(__file__).resolve().parent.parent
 WEEK2 = ROOT / "week2"
-QUANT = ROOT / "quant"
 
 # Add week2/ to sys.path so `signals`, `portfolio`, `core` resolve.
 for p in (WEEK2, ROOT):
@@ -67,6 +64,8 @@ from portfolio.models import Order, Position         # noqa: E402
 import signals.tasks                                  # noqa: E402  (monkeypatch target)
 from signals.tasks import generate_daily_signals     # noqa: E402
 from portfolio.tasks import execute_signal_orders    # noqa: E402
+# Canonical Zerodha cost stack — core/costs.py, shared with the API + quant/04.
+from core.costs import zerodha_round_trip_cost as _round_trip_cost  # noqa: E402
 
 
 BASKET = [
@@ -178,16 +177,8 @@ def reset_database(refresh_db: bool) -> None:
         Stock.objects.get_or_create(symbol=symbol, defaults={"name": name, "sector": sector})
 
 
-# ── Layer 5+6: quant tools (importlib because filenames start with digits) ──
-def _load_quant_module(rel_path: str) -> Any:
-    """Load `quant/.../NN_name.py` whose module name can't start with a digit."""
-    full = QUANT / rel_path
-    spec = importlib.util.spec_from_file_location(rel_path.replace("/", ".").replace(".py", ""), full)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"could not load {full}")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+# ── Layer 5+6: quant tools (canonical loader — core/quant_loader.py) ────────
+from core.quant_loader import load_quant_module as _load_quant_module  # noqa: E402
 
 
 def run_pairs_cointegration(panel: dict[str, pd.DataFrame]) -> dict:
@@ -234,8 +225,8 @@ def monte_carlo_on_signal(signal_row: Signal, panel: dict[str, pd.DataFrame],
     weekly_gross = np.prod(1 + samples, axis=1) - 1
     end_values = capital * (1 + weekly_gross)
 
-    # Same Zerodha cost stack as one_week_simulation.py.
-    costs = np.array([_round_trip_cost(capital, ev) for ev in end_values])
+    # Canonical cost stack, vectorised — one call over all n_sims end values.
+    costs = _round_trip_cost(capital, end_values)
     net_end = end_values - costs
     net_pct = (net_end - capital) / capital * 100
 
@@ -249,16 +240,6 @@ def monte_carlo_on_signal(signal_row: Signal, panel: dict[str, pd.DataFrame],
         "prob_profit_pct": round(float(np.mean(net_pct > 0)) * 100, 1),
     }
 
-
-def _round_trip_cost(buy_value: float, sell_value: float) -> float:
-    """Zerodha equity-delivery (CNC) round-trip — matches one_week_simulation.py."""
-    stt = (buy_value + sell_value) * 0.001
-    exch = (buy_value + sell_value) * 0.0000325
-    sebi = (buy_value + sell_value) * 0.000001
-    stamp = buy_value * 0.00015
-    gst = (exch + sebi) * 0.18
-    dp = 13.5 * 1.18
-    return stt + exch + sebi + stamp + gst + dp
 
 
 # ── Main orchestrator ────────────────────────────────────────────────────────

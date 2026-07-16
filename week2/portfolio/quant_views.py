@@ -12,12 +12,10 @@ than that.
 """
 from __future__ import annotations
 
-import importlib.util
 import json
 import logging
 import time
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -26,25 +24,14 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from core.quant_loader import load_quant_module as _load_quant_module
+
 logger = logging.getLogger(__name__)
 
-QUANT_DIR = Path(settings.BASE_DIR).parent / "quant"
 PANEL_TTL = 3600.0  # seconds
 
 # (symbols tuple) -> (fetched_at, {symbol: DataFrame})
 _panel_cache: dict[tuple, tuple[float, dict[str, pd.DataFrame]]] = {}
-
-
-def _load_quant_module(rel_path: str) -> Any:
-    """Load quant/<rel_path> whose module name can't start with a digit."""
-    full = QUANT_DIR / rel_path
-    spec = importlib.util.spec_from_file_location(
-        rel_path.replace("/", ".").replace(".py", ""), full)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"could not load {full}")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
 
 
 def _tracked_panel() -> dict[str, pd.DataFrame]:

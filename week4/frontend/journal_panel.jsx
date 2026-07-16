@@ -9,11 +9,11 @@
 // Components exported on window:
 //   JournalView — sidebar-nav wrapper (PageHead + polling table)
 
-const { useState: jUseState, useEffect: jUseEffect } = React;
+const { useState: jUseState } = React;
 
-const JOURNAL_POLL_MS = 30_000;  // same cadence as useFinPilotData
+const JOURNAL_POLL_MS = 30_000;
 
-const STAGE_FILTERS = ['all', 'analyst', 'exit', 'execution', 'session', 'signal'];
+const STAGE_FILTERS = ['all', 'ml', 'analyst', 'exit', 'execution', 'session', 'signal'];
 
 // Decision word → colour. Green for go, red for stop, neutral otherwise.
 function decisionColor(decision) {
@@ -24,36 +24,12 @@ function decisionColor(decision) {
 }
 
 function JournalView() {
-  const [entries, setEntries] = jUseState([]);
   const [stage, setStage] = jUseState('all');
-  const [error, setError] = jUseState(null);
-  const [loaded, setLoaded] = jUseState(false);
-
-  jUseEffect(() => {
-    let cancelled = false;
-
-    async function poll() {
-      const qs = stage === 'all' ? '' : `?stage=${stage}`;
-      try {
-        const res = await fetch(`${window.FINPILOT_API}/portfolio/journal/${qs}`);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
-        if (cancelled) return;
-        // DRF pagination: {count, results}; unwrap like data.jsx's unwrapDRF.
-        setEntries(Array.isArray(data) ? data : (data.results || []));
-        setError(null);
-        setLoaded(true);
-      } catch (e) {
-        if (cancelled) return;
-        setError(e.message);
-        setLoaded(true);
-      }
-    }
-
-    poll();
-    const id = setInterval(poll, JOURNAL_POLL_MS);
-    return () => { cancelled = true; clearInterval(id); };
-  }, [stage]);
+  const qs = stage === 'all' ? '' : `?stage=${stage}`;
+  const { data, error, loading } = useApi(`/portfolio/journal/${qs}`,
+                                          { poll: JOURNAL_POLL_MS });
+  const entries = unwrapDRF(data);
+  const loaded = !loading;
 
   return (
     <div className="view-enter">

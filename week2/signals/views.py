@@ -18,20 +18,9 @@ from rest_framework.views import APIView
 from .models import Signal, Stock
 from .serializers import SignalSerializer, StockSerializer
 
+from finpilot.api import ActionView, result_count as _result_count
+
 logger = logging.getLogger(__name__)
-
-
-def _result_count(response) -> int:
-    """Total rows in a (possibly paginated) DRF list response.
-
-    WHY read the count from the response instead of `qs.count()` inside
-    get_queryset: the paginator ALREADY runs a COUNT query to build the
-    paginated envelope — counting again in get_queryset doubles the DB
-    round-trips of every list request just to feed a log line. This helper
-    reuses the number the paginator computed for free.
-    """
-    data = response.data
-    return data.get("count", 0) if isinstance(data, dict) else len(data)
 
 
 class StockListView(generics.ListAPIView):
@@ -228,33 +217,20 @@ class ExplainSignalView(APIView):
         }
 
 
-class RefreshSignalsView(APIView):
+class RefreshSignalsView(ActionView):
     """POST /api/signals/refresh/ — run today's signal generation, now.
 
-    Fires the production task (`generate_daily_signals`) on a background
-    thread via portfolio/runner.py and returns immediately — the task takes
-    minutes when LLM enrichment runs, far beyond any sane HTTP timeout. The
-    dashboard polls /api/system/ for completion and the Journal for the
-    outcome.
-
-    Returns 202 (started), 409 (already running), or 403 (see
-    runner.action_allowed — DEBUG or X-Actions-Token required).
+    Backgrounded because the task takes minutes when LLM enrichment runs —
+    far beyond any sane HTTP timeout. The dashboard polls /api/system/ for
+    completion and the Journal for the outcome. Contract (202/409/403) lives
+    in finpilot.api.ActionView.
     """
 
-    def post(self, request):
-        from portfolio import runner
-        if not runner.action_allowed(request):
-            return Response(
-                {"error": "actions are disabled — set ACTIONS_TOKEN and send "
-                          "X-Actions-Token, or run with DEBUG=True"},
-                status=status.HTTP_403_FORBIDDEN)
+    action_name = "refresh-signals"
+
+    def get_task(self):
         from .tasks import generate_daily_signals
-        state = runner.launch("refresh-signals", generate_daily_signals)
-        logger.info("RefreshSignalsView: %s", state)
-        return Response(
-            {"action": "refresh-signals", "status": state},
-            status=(status.HTTP_202_ACCEPTED if state == "started"
-                    else status.HTTP_409_CONFLICT))
+        return generate_daily_signals
 
 
 class NewsFeedView(APIView):

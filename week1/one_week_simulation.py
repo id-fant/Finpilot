@@ -37,6 +37,9 @@ def zerodha_costs(buy_value: float, sell_value: float) -> float:
     sebi = (buy_value + sell_value) * 0.000001           # SEBI charge
     stamp = buy_value * 0.00015                          # stamp duty on buy
     gst = (exch + sebi) * 0.18                           # GST on slice
+    # NOTE: this is the pedagogical copy of the cost stack — the canonical,
+    # importable one is week2/core/costs.py (this script stays dependency-free
+    # on purpose). If charges change, update BOTH.
     dp = 13.5 * 1.18                                     # DP charge per sell day (~₹15.93)
     return stt + exch + sebi + stamp + gst + dp
 

@@ -232,21 +232,7 @@ function CommandView({ data, actions }) {
 
 // ── Risk card (1-day VaR / CVaR, historical simulation) ────────────────────
 function RiskCard() {
-  const [risk, setRisk] = vUseState(null);
-  const [err, setErr] = vUseState(null);
-
-  React.useEffect(() => {
-    let cancelled = false;
-    fetch(`${window.FINPILOT_API}/portfolio/risk/`)
-      .then(async r => {
-        const body = await r.json().catch(() => null);
-        if (!r.ok) throw new Error((body && body.error) || `HTTP ${r.status}`);
-        return body;
-      })
-      .then(d => { if (!cancelled) setRisk(d); })
-      .catch(e => { if (!cancelled) setErr(e.message); });
-    return () => { cancelled = true; };
-  }, []);
+  const { data: risk, error: err } = useApi('/portfolio/risk/');
 
   if (err) return (
     <div className="card muted" style={{ fontSize: 12.5, color: 'var(--red)' }}>

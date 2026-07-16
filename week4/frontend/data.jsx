@@ -104,6 +104,38 @@ function useFinPilot() {
   return { ...state, refetch };
 }
 
+// ── useApi — the one GET hook every panel shares ────────────────────────────
+// Replaces six hand-rolled fetch/error/loading blocks. Covers the three
+// shapes the panels need: fetch-on-mount, refetch when `path` changes
+// (scope chips, symbol pickers), and interval polling. Errors keep the last
+// good data so a blip doesn't blank a rendered panel.
+function useApi(path, { poll = 0, enabled = true } = {}) {
+  const [state, setState] = React.useState({ data: null, error: null, loading: true });
+
+  const load = React.useCallback(async () => {
+    try {
+      const res = await fetch(`${FINPILOT_API}${path}`);
+      const body = await res.json().catch(() => null);
+      if (!res.ok) throw new Error((body && body.error) || `HTTP ${res.status}`);
+      setState({ data: body, error: null, loading: false });
+    } catch (e) {
+      setState(s => ({ data: s.data, error: e.message, loading: false }));
+    }
+  }, [path]);
+
+  React.useEffect(() => {
+    if (!enabled) return;
+    setState(s => ({ ...s, loading: true, error: null }));
+    load();
+    if (poll > 0) {
+      const id = setInterval(load, poll);
+      return () => clearInterval(id);
+    }
+  }, [load, poll, enabled]);
+
+  return { ...state, refetch: load };
+}
+
 // POST an action (refresh-signals / execute-orders); returns the HTTP status.
 async function postAction(path) {
   const res = await fetch(`${FINPILOT_API}${path}`, {
@@ -115,6 +147,7 @@ async function postAction(path) {
 
 window.FINPILOT_API = FINPILOT_API;
 window.useFinPilot = useFinPilot;
+window.useApi = useApi;
 window.postAction = postAction;
 window.formatINR = formatINR;
 window.formatCompactINR = formatCompactINR;

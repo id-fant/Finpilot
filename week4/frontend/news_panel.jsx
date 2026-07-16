@@ -7,37 +7,18 @@
 //
 // Exported on window: NewsView
 
-const { useState: nUseState, useEffect: nUseEffect } = React;
+const { useState: nUseState } = React;
 
 function NewsView() {
-  const [stocks, setStocks] = nUseState([]);
   const [scope, setScope] = nUseState('market');   // 'market' | 'RELIANCE.NS' | …
-  const [items, setItems] = nUseState(null);
-  const [error, setError] = nUseState(null);
-  const [loading, setLoading] = nUseState(false);
 
   // Scope options come from the real tracked universe.
-  nUseEffect(() => {
-    fetch(`${window.FINPILOT_API}/signals/stocks/`)
-      .then(r => r.json())
-      .then(d => setStocks((Array.isArray(d) ? d : (d.results || [])).map(s => s.symbol)))
-      .catch(() => {});
-  }, []);
+  const stocksApi = useApi('/signals/stocks/');
+  const stocks = unwrapDRF(stocksApi.data).map(s => s.symbol);
 
-  nUseEffect(() => {
-    let cancelled = false;
-    setLoading(true); setError(null); setItems(null);
-    const q = scope === 'market' ? '' : `?symbol=${encodeURIComponent(scope)}`;
-    fetch(`${window.FINPILOT_API}/signals/news/${q}`)
-      .then(async r => {
-        const body = await r.json().catch(() => null);
-        if (!r.ok) throw new Error((body && body.error) || `HTTP ${r.status}`);
-        return body;
-      })
-      .then(d => { if (!cancelled) { setItems(d.items || []); setLoading(false); } })
-      .catch(e => { if (!cancelled) { setError(e.message); setLoading(false); } });
-    return () => { cancelled = true; };
-  }, [scope]);
+  const q = scope === 'market' ? '' : `?symbol=${encodeURIComponent(scope)}`;
+  const { data, error, loading } = useApi(`/signals/news/${q}`);
+  const items = loading ? null : (data ? (data.items || []) : null);
 
   const sourceTone = (src) => src === 'Yahoo Finance' ? 'var(--violet)' : 'var(--accent)';
 

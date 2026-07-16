@@ -2,7 +2,6 @@
 import csv
 import logging
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 from django.conf import settings
@@ -10,6 +9,8 @@ from django.db.models import QuerySet, Sum
 from rest_framework import generics, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
+
+from finpilot.api import ActionView, result_count
 
 from .models import JournalEntry, Order, Position
 from .serializers import (
@@ -69,14 +70,10 @@ class OrderHistoryView(generics.ListAPIView):
     def list(self, request, *args, **kwargs):
         # WHY log here, not in get_queryset: a `qs.count()` there would fire an
         # extra COUNT query per request — DRF's paginator already counts the
-        # queryset, so we read the total from the response it built for free.
+        # queryset (finpilot.api.result_count reads its number for free).
         response = super().list(request, *args, **kwargs)
-        # `Response.data` is stubbed too tightly to satisfy len() after the
-        # isinstance narrowing; it is a dict or list at runtime. Pin to Any —
-        # same stub-workaround pattern as week3/llm/__init__.py.
-        data: Any = response.data
-        total = data.get("count") if isinstance(data, dict) else len(data)
-        logger.info("OrderHistoryView: returning %s order(s)", total)
+        logger.info("OrderHistoryView: returning %s order(s)",
+                    result_count(response))
         return response
 
 
@@ -202,29 +199,19 @@ class PortfolioRiskView(APIView):
         return Response(payload)
 
 
-class ExecuteOrdersView(APIView):
+class ExecuteOrdersView(ActionView):
     """POST /api/portfolio/execute-orders/ — route today's signals, now.
 
-    Background-threaded via portfolio/runner.py, same contract as
-    /api/signals/refresh/: 202 started / 409 already running / 403 denied.
-    Note the gates still apply — this only runs the same production task the
-    scheduler would; it cannot bypass the ML gate, the analyst, or the caps.
+    Runs the same production task the scheduler would; it cannot bypass the
+    ML gate, the analyst, or the risk caps. Contract (202/409/403) lives in
+    finpilot.api.ActionView.
     """
 
-    def post(self, request):
-        from . import runner
-        if not runner.action_allowed(request):
-            return Response(
-                {"error": "actions are disabled — set ACTIONS_TOKEN and send "
-                          "X-Actions-Token, or run with DEBUG=True"},
-                status=status.HTTP_403_FORBIDDEN)
+    action_name = "execute-orders"
+
+    def get_task(self):
         from .tasks import execute_signal_orders
-        state = runner.launch("execute-orders", execute_signal_orders)
-        logger.info("ExecuteOrdersView: %s", state)
-        return Response(
-            {"action": "execute-orders", "status": state},
-            status=(status.HTTP_202_ACCEPTED if state == "started"
-                    else status.HTTP_409_CONFLICT))
+        return execute_signal_orders
 
 
 class JournalEntryListView(generics.ListAPIView):
@@ -254,9 +241,8 @@ class JournalEntryListView(generics.ListAPIView):
 
     def list(self, request, *args, **kwargs):
         response = super().list(request, *args, **kwargs)
-        data: Any = response.data
-        total = data.get("count") if isinstance(data, dict) else len(data)
-        logger.info("JournalEntryListView: returning %s entry(ies)", total)
+        logger.info("JournalEntryListView: returning %s entry(ies)",
+                    result_count(response))
         return response
 
 
@@ -266,23 +252,9 @@ ANNUAL_TRADING_DAYS = 252
 WEEKS_PER_YEAR = 52
 
 
-def _zerodha_round_trip_cost(buy_value, sell_value):
-    """Zerodha equity-delivery (CNC) round-trip — matches week1/one_week_simulation.py.
-
-    The same cost stack the README and the orchestrator quote; centralised here
-    so the API never disagrees with the standalone scripts.
-
-    Accepts floats OR NumPy arrays — the body is pure arithmetic, so passing
-    the whole `end_values` vector computes every simulation's cost in one
-    vectorised sweep instead of a Python-level loop over n_sims elements.
-    """
-    stt = (buy_value + sell_value) * 0.001
-    exch = (buy_value + sell_value) * 0.0000325
-    sebi = (buy_value + sell_value) * 0.000001
-    stamp = buy_value * 0.00015
-    gst = (exch + sebi) * 0.18
-    dp = 13.5 * 1.18  # ₹13.5 + 18% GST, flat per scrip per sell day
-    return stt + exch + sebi + stamp + gst + dp
+# Canonical cost stack lives in core (framework-free, vectorised) — one
+# import, one truth, shared with the orchestrator and the ML dataset builder.
+from core.costs import zerodha_round_trip_cost as _zerodha_round_trip_cost  # noqa: E402
 
 
 # Module-level cache for the backtest CSV: (file mtime, parsed table).
