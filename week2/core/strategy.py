@@ -24,6 +24,8 @@ from typing import cast
 import numpy as np
 import pandas as pd
 
+from core.quant_math import ewma_annualized_volatility, trend_regime
+
 # Logger name is "core.strategy" — routed via the "core" logger.
 logger = logging.getLogger(__name__)
 
@@ -105,7 +107,13 @@ def _clean(value: float) -> float | None:
     return None if pd.isna(value) else round(float(value), 4)
 
 
-def generate_signal(df: pd.DataFrame, symbol: str) -> dict:
+def generate_signal(
+    df: pd.DataFrame,
+    symbol: str,
+    benchmark: pd.DataFrame | pd.Series | None = None,
+    apply_trend_filter: bool = True,
+    volatility_halflife: int = 20,
+) -> dict:
     """Evaluate the strategy on the most recent bar and return a signal.
 
     Uses 3-indicator CONFLUENCE: one indicator firing is noise; two or more
@@ -115,6 +123,9 @@ def generate_signal(df: pd.DataFrame, symbol: str) -> dict:
     Args:
         df: OHLCV DataFrame (indicators are computed internally).
         symbol: the ticker — copied into the result for the caller's convenience.
+        benchmark: optional benchmark OHLCV frame or close series.
+        apply_trend_filter: reject BUYs in a confirmed bear regime when true.
+        volatility_halflife: EWMA half-life used by execution-time sizing.
 
     Returns:
         dict with keys: symbol, date, signal, rsi, macd, macd_signal, price,
@@ -122,6 +133,16 @@ def generate_signal(df: pd.DataFrame, symbol: str) -> dict:
     """
     logger.debug("generate_signal(%s): evaluating %d input bars", symbol, len(df))
     indicators = compute_indicators(df)
+    close = cast("pd.Series", indicators["Close"])
+    benchmark_close = None
+    if isinstance(benchmark, pd.DataFrame) and "Close" in benchmark:
+        benchmark_close = cast("pd.Series", benchmark["Close"])
+    elif isinstance(benchmark, pd.Series):
+        benchmark_close = benchmark
+    regime = trend_regime(close, benchmark_close)
+    annualized_vol = ewma_annualized_volatility(
+        close.pct_change(), halflife=volatility_halflife
+    )
     last = indicators.iloc[-1]
     # `Index.__getitem__` returns `Index | scalar` per stubs; on a
     # DatetimeIndex the scalar is always a Timestamp (which has .date()).
@@ -138,6 +159,9 @@ def generate_signal(df: pd.DataFrame, symbol: str) -> dict:
             "price": round(float(last["Close"]), 2),
             "reason": "HOLD (insufficient history to evaluate indicators)",
             "buy_votes": 0, "sell_votes": 0,
+            "annualized_vol": annualized_vol,
+            "trend_regime": regime["label"],
+            "trend_score": regime["score"],
         }
 
     today = indicators.iloc[-1]
@@ -187,6 +211,10 @@ def generate_signal(df: pd.DataFrame, symbol: str) -> dict:
                  sell_votes, signal, today["rsi"], today["Close"])
 
     detail = "; ".join(reasons) if reasons else "no indicator extremes"
+    if (signal == "BUY" and apply_trend_filter
+            and regime["eligible"] is False):
+        signal = "HOLD"
+        detail += "; BUY rejected by long-term trend/relative-momentum filter"
     reason = f"{signal}: {detail}" if signal != "HOLD" else f"HOLD ({detail})"
 
     return {
@@ -203,4 +231,9 @@ def generate_signal(df: pd.DataFrame, symbol: str) -> dict:
         # should know which it is looking at.
         "buy_votes": buy_votes,
         "sell_votes": sell_votes,
+        "annualized_vol": (
+            None if annualized_vol is None else round(annualized_vol, 6)
+        ),
+        "trend_regime": regime["label"],
+        "trend_score": regime["score"],
     }

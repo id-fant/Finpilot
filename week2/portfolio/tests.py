@@ -6,13 +6,20 @@ fixtures). They run inside Django so the ORM + management commands are real
 """
 from __future__ import annotations
 
+import math
 from datetime import date
 from decimal import Decimal
 
 import pytest
 from django.core.management import call_command
 
-from portfolio.models import Order, Position
+from portfolio.models import (
+    ActionReceipt,
+    JournalEntry,
+    MarketQuote,
+    Order,
+    Position,
+)
 from signals.models import Signal, Stock
 
 
@@ -129,6 +136,57 @@ def test_execute_signal_orders_books_position_on_fill(monkeypatch):
 
 
 @pytest.mark.django_db
+def test_expected_value_gate_skips_negative_edge(monkeypatch, settings):
+    from portfolio.tasks import execute_signal_orders
+
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    settings.ML_GATE = "off"
+    settings.EV_GATE = "auto"
+    stock = Stock.objects.create(symbol="NOEDGE.NS", name="No Edge")
+    Signal.objects.create(
+        stock=stock,
+        date=date.today(),
+        signal_type="BUY",
+        price=Decimal("100.00"),
+        reason="test",
+        ml_prob=0.20,
+    )
+
+    summary = execute_signal_orders()
+    assert summary["ev_skipped"] == 1
+    assert not Order.objects.filter(stock=stock).exists()
+    assert JournalEntry.objects.filter(
+        symbol=stock.symbol, decision="EV_SKIP"
+    ).exists()
+
+
+@pytest.mark.django_db
+def test_volatility_target_reduces_order_size(monkeypatch, settings):
+    from broker.paper_trade import PaperBroker
+    from portfolio.tasks import execute_signal_orders
+
+    monkeypatch.setattr(PaperBroker, "get_ltp", lambda self, symbol: 100.0)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    settings.ML_GATE = "off"
+    settings.EV_GATE = "off"
+    settings.BROKER_MAX_TRADE_VALUE = 50_000
+    settings.VOL_TARGET = 0.15
+    stock = Stock.objects.create(symbol="HIGHVOL.NS", name="High Vol")
+    Signal.objects.create(
+        stock=stock,
+        date=date.today(),
+        signal_type="BUY",
+        price=Decimal("100.00"),
+        reason="test",
+        annualized_vol=0.30,
+    )
+
+    summary = execute_signal_orders()
+    assert summary["placed"] == 1
+    assert Order.objects.get(stock=stock).quantity == 250
+
+
+@pytest.mark.django_db
 def test_system_endpoint_reports_full_shape(client):
     """/api/system/ is the control room — every block the dashboard reads
     must be present even on an empty database."""
@@ -138,6 +196,187 @@ def test_system_endpoint_reports_full_shape(client):
     for key in ("broker", "gates", "data", "risk", "actions"):
         assert key in body, f"missing block: {key}"
     assert "analyst" in body["gates"] and "ml" in body["gates"]
+
+
+@pytest.mark.django_db
+def test_projection_includes_stock_price_surface(client, monkeypatch):
+    from portfolio import views
+
+    monkeypatch.setattr(
+        views,
+        "_load_backtest_stats",
+        lambda: {
+            "SURFACE.NS": {
+                "annual_return_pct": 12.0,
+                "annual_sharpe": 0.8,
+            }
+        },
+    )
+    stock = Stock.objects.create(symbol="SURFACE.NS", name="Surface")
+    Signal.objects.create(
+        stock=stock,
+        date=date.today(),
+        signal_type="HOLD",
+        price=Decimal("123.45"),
+    )
+
+    response = client.get(
+        "/api/portfolio/projection/?symbol=SURFACE.NS&horizon_days=5&n_sims=100"
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["method"] == "gaussian"
+    assert {item["id"] for item in body["available_methods"]} == {
+        "gaussian", "gbm", "student_t", "mean_reversion",
+    }
+    assert body["price_scale"] == "market"
+    assert body["starting_price"] == 123.45
+    assert set(body["price_percentiles"]) == {
+        "p05", "p25", "p50", "p75", "p95",
+    }
+    assert body["price_percentiles"]["p50"][0] == 123.45
+
+
+@pytest.mark.parametrize(
+    "method",
+    ["gaussian", "gbm", "student_t", "mean_reversion"],
+)
+@pytest.mark.django_db
+def test_projection_methods_return_ordered_finite_bands(
+        client, monkeypatch, method):
+    from portfolio import views
+
+    monkeypatch.setattr(
+        views,
+        "_load_backtest_stats",
+        lambda: {
+            "MODEL.NS": {
+                "annual_return_pct": 14.0,
+                "annual_sharpe": 0.9,
+            }
+        },
+    )
+
+    response = client.get(
+        f"/api/portfolio/projection/?symbol=MODEL.NS&method={method}"
+        "&horizon_days=12&n_sims=250"
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["method"] == method
+    assert body["method_label"]
+    assert body["method_description"]
+    assert len(body["days"]) == 13
+
+    bands = body["percentiles"]
+    for day in range(len(body["days"])):
+        values = [bands[key][day] for key in ("p05", "p25", "p50", "p75", "p95")]
+        assert all(math.isfinite(value) and value > 0 for value in values)
+        assert values == sorted(values)
+
+
+@pytest.mark.django_db
+def test_projection_rejects_unknown_method(client, monkeypatch):
+    from portfolio import views
+
+    monkeypatch.setattr(
+        views,
+        "_load_backtest_stats",
+        lambda: {
+            "MODEL.NS": {
+                "annual_return_pct": 14.0,
+                "annual_sharpe": 0.9,
+            }
+        },
+    )
+    response = client.get(
+        "/api/portfolio/projection/?symbol=MODEL.NS&method=crystal_ball"
+    )
+    assert response.status_code == 400
+    assert set(response.json()["available_methods"]) == {
+        "gaussian", "gbm", "student_t", "mean_reversion",
+    }
+
+
+@pytest.mark.django_db
+def test_dashboard_snapshot_is_complete_and_sets_csrf_cookie(client):
+    call_command("seed_demo")
+    resp = client.get("/api/dashboard/snapshot/")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert set(("signals", "positions", "orders", "journal", "system")) <= set(body)
+    assert body["signals"]
+    assert "csrftoken" in resp.cookies
+
+
+@pytest.mark.django_db
+def test_compiled_frontend_index_is_served(client, settings, tmp_path):
+    settings.FRONTEND_DIST = tmp_path
+    (tmp_path / "index.html").write_text(
+        "<!doctype html><title>FinPilot compiled</title>", encoding="utf-8",
+    )
+    resp = client.get("/")
+    assert resp.status_code == 200
+    assert b"FinPilot compiled" in b"".join(resp.streaming_content)
+
+
+@pytest.mark.django_db
+def test_action_idempotency_key_prevents_second_launch(
+        client, monkeypatch, settings):
+    from portfolio import runner
+
+    settings.DEBUG = True
+    launches = []
+    monkeypatch.setattr(
+        runner, "launch",
+        lambda name, fn: launches.append(name) or "started",
+    )
+    headers = {"HTTP_IDEMPOTENCY_KEY": "browser-retry-123"}
+    first = client.post("/api/signals/refresh/", **headers)
+    second = client.post("/api/signals/refresh/", **headers)
+
+    assert first.status_code == 202
+    assert second.status_code == 200
+    assert second.json()["duplicate"] is True
+    assert launches == ["refresh-signals"]
+    assert ActionReceipt.objects.count() == 1
+
+
+@pytest.mark.django_db
+def test_market_ticks_persist_latest_quote():
+    from portfolio.market_gateway import persist_ticks
+
+    stock = Stock.objects.create(symbol="LIVE.NS", name="Live", sector="Test")
+    assert persist_ticks(
+        [{"instrument_token": 123, "last_price": 456.75}],
+        {123: stock.pk},
+    ) == 1
+    quote = MarketQuote.objects.get(stock=stock)
+    assert quote.instrument_token == 123
+    assert quote.last_price == Decimal("456.75")
+
+
+@pytest.mark.django_db
+def test_broker_fill_update_is_exactly_once():
+    from portfolio.market_gateway import reconcile_order_update
+
+    stock = Stock.objects.create(symbol="FILL.NS", name="Fill", sector="Test")
+    order = Order.objects.create(
+        stock=stock, order_type="MARKET", side="BUY", quantity=5,
+        price=Decimal("100"), status="PENDING", is_paper=False,
+        broker_order_id="KITE-123",
+    )
+    update = {
+        "order_id": "KITE-123", "status": "COMPLETE",
+        "filled_quantity": 5, "average_price": 101.25,
+    }
+    assert reconcile_order_update(update)
+    assert reconcile_order_update(update)
+    order.refresh_from_db()
+    assert order.status == "COMPLETE" and order.fill_applied
+    position = Position.objects.get(stock=stock, is_open=True)
+    assert position.quantity == 5
+    assert position.avg_entry_price == Decimal("101.25")
 
 
 @pytest.mark.django_db

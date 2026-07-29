@@ -13,38 +13,19 @@
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
 <meta http-equiv="Pragma" content="no-cache" />
 <meta http-equiv="Expires" content="0" />
-<title>FinPilot — Agentic Trading Dashboard</title>
+<meta name="description" content="FinPilot decision workspace for NIFTY 50 signals, paper trades, portfolio risk, and quantitative research." />
+<meta name="theme-color" content="#f4f1e8" />
+<link rel="manifest" href="/manifest.webmanifest" />
+<title>FinPilot — Trading intelligence, your way</title>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
-<link rel="stylesheet" href="styles.css?v=finpilot11" />
+<link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
+<a class="skip-link" href="#main-content">Skip to dashboard</a>
 <div id="root"></div>
 
-<!-- React + Babel via CDN. integrity hashes intentionally removed: they break
-     the moment unpkg re-publishes the file (even at the same version), blocking
-     the scripts silently. This is a dev prototype — the safety isn't worth the
-     fragility. Pin a real lockfile if/when you productionise. -->
-<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" crossorigin></script>
-<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" crossorigin></script>
-<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" crossorigin></script>
-
-<!-- data-presets="env,react" tells Babel-standalone to apply the React JSX
-     transform plus modern-syntax lowering (optional chaining, ??, etc).
-     Without it some Babel-standalone builds default to no preset and choke
-     on JSX. -->
-<script type="text/babel" data-presets="env,react" src="data.jsx?v=finpilot11"></script>
-<script type="text/babel" data-presets="env,react" src="components.jsx?v=finpilot11"></script>
-<script type="text/babel" data-presets="env,react" src="views.jsx?v=finpilot11"></script>
-<script type="text/babel" data-presets="env,react" src="explainer.jsx?v=finpilot11"></script>
-<!-- MC panel comes after views.jsx so it can reference PageHead at render time. -->
-<script type="text/babel" data-presets="env,react" src="mc_panel.jsx?v=finpilot11"></script>
-<script type="text/babel" data-presets="env,react" src="journal_panel.jsx?v=finpilot11"></script>
-<script type="text/babel" data-presets="env,react" src="system_panel.jsx?v=finpilot11"></script>
-<script type="text/babel" data-presets="env,react" src="quant_panel.jsx?v=finpilot11"></script>
-<script type="text/babel" data-presets="env,react" src="stock_panel.jsx?v=finpilot11"></script>
-<script type="text/babel" data-presets="env,react" src="news_panel.jsx?v=finpilot11"></script>
-<script type="text/babel" data-presets="env,react" src="app.jsx?v=finpilot11"></script>
+<script type="module" src="/src/main.jsx"></script>
 </body>
 </html>

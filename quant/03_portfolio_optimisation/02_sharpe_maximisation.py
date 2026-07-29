@@ -20,6 +20,7 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 from scipy.optimize import minimize
+from sklearn.covariance import LedoitWolf
 
 RF = 0.065
 TRADING_DAYS = 252
@@ -66,6 +67,41 @@ def max_sharpe_weights(mean, cov) -> np.ndarray:
     return result.x
 
 
+def robust_covariance(returns: pd.DataFrame) -> np.ndarray:
+    """Annualized Ledoit-Wolf shrinkage covariance estimate."""
+    clean = returns.dropna()
+    if clean.empty:
+        raise ValueError("returns contain no complete observations")
+    return LedoitWolf().fit(clean.to_numpy()).covariance_ * TRADING_DAYS
+
+
+def equal_risk_contribution_weights(cov) -> np.ndarray:
+    """Long-only weights whose assets contribute equal portfolio risk."""
+    cov = np.asarray(cov, dtype=float)
+    k = len(cov)
+
+    def objective(w):
+        marginal = cov @ w
+        contributions = w * marginal
+        total = contributions.sum()
+        if total <= 0:
+            return 1e6
+        shares = contributions / total
+        return float(np.sum((shares - 1 / k) ** 2))
+
+    result = minimize(
+        objective,
+        np.repeat(1 / k, k),
+        method="SLSQP",
+        bounds=[(1e-8, 1.0)] * k,
+        constraints={"type": "eq", "fun": lambda w: w.sum() - 1},
+        options={"ftol": 1e-12, "maxiter": 2000},
+    )
+    if not result.success:
+        print(f"  [WARN] risk-parity optimiser did not converge: {result.message}")
+    return result.x / result.x.sum()
+
+
 if __name__ == "__main__":
     basket = ["RELIANCE.NS", "TCS.NS", "HDFCBANK.NS",
               "INFY.NS", "ITC.NS", "LT.NS"]
@@ -75,18 +111,27 @@ if __name__ == "__main__":
     # Pyright's complaint about scalar branches in the mean() type union.
     # See 01_markowitz.py for the same pattern.
     mean = np.asarray(returns.mean()) * TRADING_DAYS
-    cov = np.asarray(returns.cov()) * TRADING_DAYS
+    cov = robust_covariance(returns)
 
     optimal = max_sharpe_weights(mean, cov)
-    equal = np.repeat(1 / len(basket), len(basket))
+    risk_parity = equal_risk_contribution_weights(cov)
+    equal = np.repeat(1 / len(returns.columns), len(returns.columns))
 
     print(f"\n  {'portfolio':16s}{'return':>10}{'vol':>10}{'Sharpe':>10}")
-    for label, w in [("equal-weight", equal), ("max-Sharpe", optimal)]:
+    for label, w in [
+        ("equal-weight", equal),
+        ("risk-parity", risk_parity),
+        ("max-Sharpe", optimal),
+    ]:
         ret, vol, sharpe = portfolio_stats(w, mean, cov)
         print(f"  {label:16s}{ret * 100:>9.2f}%{vol * 100:>9.2f}%{sharpe:>10.2f}")
 
     print("\n  Max-Sharpe weights:")
     for symbol, w in zip(returns.columns, optimal):
+        print(f"    {symbol:14s} {w * 100:5.1f}%")
+
+    print("\n  Equal-risk-contribution weights:")
+    for symbol, w in zip(returns.columns, risk_parity):
         print(f"    {symbol:14s} {w * 100:5.1f}%")
 
     print("\n  This is the tangency portfolio — the exact point the random")

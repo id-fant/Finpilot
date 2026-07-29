@@ -24,6 +24,14 @@ from typing import Any
 
 from celery import shared_task
 from django.conf import settings
+from django.db import transaction
+
+from core.costs import zerodha_round_trip_cost
+from core.quant_math import (
+    expected_trade_return,
+    fractional_kelly,
+    volatility_target_fraction,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +89,7 @@ def _analyst_gate(signal, open_symbols: set[str]) -> dict | None:
         return None
 
 
+@transaction.atomic
 def _apply_fill_to_position(stock, side: str, quantity: int, price: Decimal,
                             when: date) -> None:
     """Upsert the Position row for one filled order — the broker's book,
@@ -99,7 +108,11 @@ def _apply_fill_to_position(stock, side: str, quantity: int, price: Decimal,
 
     if quantity < 1:
         return
-    open_pos = Position.objects.filter(stock=stock, is_open=True).first()
+    open_pos = (
+        Position.objects.select_for_update()
+        .filter(stock=stock, is_open=True)
+        .first()
+    )
 
     if side == "BUY":
         if open_pos is None:
@@ -167,6 +180,25 @@ def _build_broker():
         f"Unknown BROKER setting: {broker_kind!r}. Set BROKER=paper or kite.")
 
 
+def _historical_payoff_estimate(Position) -> tuple[float, float, int]:
+    """Return average win/loss returns from closed trades, or safe priors."""
+    closed = list(
+        Position.objects
+        .filter(is_open=False, exit_price__isnull=False)
+        .values_list("avg_entry_price", "exit_price")[:250]
+    )
+    returns = [
+        float(exit_price / entry_price - 1)
+        for entry_price, exit_price in closed
+        if entry_price and exit_price
+    ]
+    wins = [value for value in returns if value > 0]
+    losses = [-value for value in returns if value < 0]
+    if len(returns) < 10 or not wins or not losses:
+        return 0.04, 0.02, len(returns)
+    return sum(wins) / len(wins), sum(losses) / len(losses), len(returns)
+
+
 @shared_task(name="portfolio.execute_signal_orders")
 def execute_signal_orders(target_date: str | None = None) -> dict:
     """Route today's BUY/SELL signals through the configured broker.
@@ -207,7 +239,8 @@ def execute_signal_orders(target_date: str | None = None) -> dict:
 
     if not candidates:
         return {"date": str(when), "placed": 0, "skipped": 0, "rejected": 0,
-                "vetoed": 0, "ml_skipped": 0, "failed": 0, "total": 0}
+                "vetoed": 0, "ml_skipped": 0, "ev_skipped": 0,
+                "failed": 0, "total": 0}
 
     # WHY build OrderManager from settings.* (not hardcoded): the risk gates are
     # 12-factor config — adjustable per environment without a code change.
@@ -222,7 +255,10 @@ def execute_signal_orders(target_date: str | None = None) -> dict:
     )
     is_paper = settings.BROKER == "paper"
 
-    placed = skipped = rejected = vetoed = ml_skipped = failed = 0
+    placed = skipped = rejected = vetoed = ml_skipped = ev_skipped = failed = 0
+    average_win, average_loss, payoff_samples = _historical_payoff_estimate(
+        Position
+    )
 
     # Resolve the ML gate threshold once: 0 = defer to the value chosen on
     # out-of-sample data at training time (core/ml_gate.py reads it from the
@@ -288,6 +324,63 @@ def execute_signal_orders(target_date: str | None = None) -> dict:
                         signal.ml_prob, ml_threshold)
             continue
 
+        # Cost-aware edge and risk sizing. These controls only reduce BUY
+        # exposure below the broker cap; missing inputs leave the old size.
+        budget = None
+        if signal.signal_type == "BUY":
+            budget = float(settings.BROKER_MAX_TRADE_VALUE)
+            budget *= volatility_target_fraction(
+                signal.annualized_vol, settings.VOL_TARGET
+            )
+            if settings.EV_GATE != "off" and signal.ml_prob is not None:
+                cost_rate = float(
+                    zerodha_round_trip_cost(budget, budget) / budget
+                )
+                edge = expected_trade_return(
+                    signal.ml_prob, average_win, average_loss, cost_rate
+                )
+                if edge < settings.EV_MIN_EDGE:
+                    ev_skipped += 1
+                    if not JournalEntry.objects.filter(
+                            stage="ml", symbol=signal.stock.symbol,
+                            decision="EV_SKIP",
+                            created_at__date=when).exists():
+                        JournalEntry.objects.create(
+                            stage="ml",
+                            symbol=signal.stock.symbol,
+                            decision="EV_SKIP",
+                            detail=(
+                                f"net expected return {edge:.2%} is below "
+                                f"required edge {settings.EV_MIN_EDGE:.2%}"
+                            ),
+                            payload={
+                                "probability": signal.ml_prob,
+                                "average_win": average_win,
+                                "average_loss": average_loss,
+                                "round_trip_cost_rate": cost_rate,
+                                "expected_return": edge,
+                                "minimum_edge": settings.EV_MIN_EDGE,
+                                "payoff_samples": payoff_samples,
+                            },
+                        )
+                    logger.info(
+                        "execute_signal_orders: EV gate skipped %s "
+                        "(edge=%.3f%% < %.3f%%)",
+                        signal.stock.symbol, edge * 100,
+                        settings.EV_MIN_EDGE * 100,
+                    )
+                    continue
+                kelly_fraction = fractional_kelly(
+                    signal.ml_prob,
+                    average_win,
+                    average_loss,
+                    fraction=settings.KELLY_FRACTION,
+                    max_fraction=settings.KELLY_MAX_CAPITAL_FRACTION,
+                )
+                budget = min(
+                    budget, float(settings.RISK_CAPITAL) * kelly_fraction
+                )
+
         # ── LLM analyst gate (week3, optional) ──────────────────────────────
         # The agentic step: an LLM reviews the proposed trade against fresh
         # headlines + the current book and can veto it or halve its size.
@@ -307,7 +400,6 @@ def execute_signal_orders(target_date: str | None = None) -> dict:
             vetoed += 1
             continue
 
-        budget = None
         verdict = _analyst_gate(signal, open_symbols)
         if verdict is not None:
             JournalEntry.objects.create(
@@ -324,10 +416,34 @@ def execute_signal_orders(target_date: str | None = None) -> dict:
                 vetoed += 1
                 continue
             if verdict["verdict"] == "reduce":
-                budget = settings.BROKER_MAX_TRADE_VALUE / 2
+                reduced_budget = settings.BROKER_MAX_TRADE_VALUE / 2
+                budget = (
+                    reduced_budget if budget is None
+                    else min(budget, reduced_budget)
+                )
                 logger.info("execute_signal_orders: analyst REDUCED %s to "
                             "half size — %s", signal.stock.symbol,
                             verdict["rationale"])
+
+        # Claim the intent BEFORE contacting the broker. The partial unique
+        # constraint on (signal, side) means two workers cannot both place the
+        # same order even if they start between the initial dedup query and
+        # this point.
+        order, intent_created = Order.objects.get_or_create(
+            signal=signal,
+            side=signal.signal_type,
+            defaults={
+                "stock": signal.stock,
+                "order_type": "MARKET",
+                "quantity": 0,
+                "price": signal.price,
+                "status": "PENDING",
+                "is_paper": is_paper,
+            },
+        )
+        if not intent_created:
+            skipped += 1
+            continue
 
         try:
             result = manager.execute_signal({
@@ -337,6 +453,8 @@ def execute_signal_orders(target_date: str | None = None) -> dict:
         except Exception as exc:  # noqa: BLE001 - one bad ticker mustn't abort the batch
             logger.error("execute_signal_orders: FAILED for %s — %s",
                          signal.stock.symbol, exc, exc_info=True)
+            order.status = "REJECTED"
+            order.save(update_fields=["status"])
             failed += 1
             continue
 
@@ -346,6 +464,8 @@ def execute_signal_orders(target_date: str | None = None) -> dict:
         # through, which our filter above should have prevented). Treat the
         # same as a real skip — nothing to persist.
         if status == "SKIPPED":
+            order.status = "CANCELLED"
+            order.save(update_fields=["status"])
             skipped += 1
             continue
 
@@ -353,22 +473,20 @@ def execute_signal_orders(target_date: str | None = None) -> dict:
         # Rejected orders are audit material: "why didn't this signal trade?"
         # is a question you WILL be asked in any post-mortem.
         fill_price = Decimal(str(result.get("price", signal.price)))
-        Order.objects.create(
-            stock=signal.stock,
-            signal=signal,
-            order_type="MARKET",
-            side=signal.signal_type,
-            quantity=result.get("quantity", 0),
-            # WHY Decimal: Order.price is a DecimalField (money). The broker
-            # returns a float for the fill price — convert at the boundary so
-            # the DB stores an exact value (LEARNINGS #45). Rejections without
-            # a fill price get the signal price as a placeholder.
-            price=fill_price,
-            status=("COMPLETE" if status == "COMPLETE"
-                    else "PENDING" if status == "SUBMITTED"
-                    else "REJECTED"),
-            is_paper=is_paper,
+        order.quantity = result.get("quantity", 0)
+        # WHY Decimal: Order.price is a DecimalField (money). The broker
+        # returns a float for the fill price — convert at the boundary so
+        # the DB stores an exact value (LEARNINGS #45).
+        order.price = fill_price
+        order.broker_order_id = result.get("order_id") or None
+        order.status = (
+            "COMPLETE" if status == "COMPLETE"
+            else "PENDING" if status == "SUBMITTED"
+            else "REJECTED"
         )
+        order.save(update_fields=[
+            "quantity", "price", "status", "broker_order_id",
+        ])
 
         # ── Position bookkeeping (the fix for the dashboard's empty donut) ──
         # WHY COMPLETE only: a paper fill is always COMPLETE; a live Kite
@@ -380,6 +498,8 @@ def execute_signal_orders(target_date: str | None = None) -> dict:
                 signal.stock, signal.signal_type,
                 result.get("quantity", 0), fill_price, when,
             )
+            order.fill_applied = True
+            order.save(update_fields=["fill_applied"])
             if signal.signal_type == "BUY":
                 open_symbols.add(signal.stock.symbol)
             elif not Position.objects.filter(
@@ -405,9 +525,12 @@ def execute_signal_orders(target_date: str | None = None) -> dict:
         "rejected": rejected,
         "vetoed": vetoed,
         "ml_skipped": ml_skipped,
+        "ev_skipped": ev_skipped,
         "failed": failed,
         "total": len(candidates),
         "broker": settings.BROKER,
     }
     logger.info("execute_signal_orders: run complete — %s", summary)
+    from finpilot.events import publish_dashboard_event
+    publish_dashboard_event("orders.updated", summary)
     return summary

@@ -5,6 +5,7 @@ import logging
 from typing import Any
 
 from celery import shared_task
+from django.conf import settings
 
 from core.data import fetch_ohlcv
 from core.ml_gate import score_signal
@@ -134,6 +135,13 @@ def generate_daily_signals() -> dict:
                 total_tracked)
     written = 0
     failures: list[str] = []
+    benchmark = None
+    if settings.TREND_FILTER != "off":
+        try:
+            benchmark = fetch_ohlcv("^NSEI", period="1y")
+        except Exception as exc:  # noqa: BLE001 - relative trend is optional
+            logger.warning("generate_daily_signals: benchmark unavailable (%s); "
+                           "using asset-only trend filter", exc)
 
     for stock in tracked:
         logger.debug("generate_daily_signals: processing %s", stock.symbol)
@@ -142,7 +150,13 @@ def generate_daily_signals() -> dict:
             # bars of history. The indicators themselves are unchanged — RSI/
             # MACD/Bollinger only look back ~26 bars either way.
             df = fetch_ohlcv(stock.symbol, period="1y")
-            result = generate_signal(df, stock.symbol)
+            result = generate_signal(
+                df,
+                stock.symbol,
+                benchmark=benchmark,
+                apply_trend_filter=settings.TREND_FILTER != "off",
+                volatility_halflife=settings.VOL_HALFLIFE,
+            )
             # Meta-labeling score for BUY entries (the only side the live
             # system trades). None = gate not in play (no model / failure) —
             # stored as NULL, which downstream treats as "unscored", never 0.
@@ -162,6 +176,8 @@ def generate_daily_signals() -> dict:
                     "macd_signal": result["macd_signal"],
                     "reason": reason,
                     "ml_prob": ml_prob,
+                    "annualized_vol": result["annualized_vol"],
+                    "trend_regime": result["trend_regime"],
                 },
             )
             written += 1
@@ -187,4 +203,6 @@ def generate_daily_signals() -> dict:
         logger.warning("generate_daily_signals: run finished with %d failure(s): %s",
                         len(failures), failures)
     logger.info("generate_daily_signals: run complete — %s", summary)
+    from finpilot.events import publish_dashboard_event
+    publish_dashboard_event("signals.updated", summary)
     return summary

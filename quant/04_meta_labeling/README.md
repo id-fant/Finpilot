@@ -43,6 +43,9 @@ chosen on out-of-sample data at training time).
   agrees with the production engine bar-for-bar.
 - **Fail-open deployment** — missing model, missing sklearn, NaN features:
   the gate returns None and the deterministic pipeline proceeds unchanged.
+- **Selection-bias diagnostics** — the model card records the Deflated Sharpe
+  Ratio and CSCV Probability of Backtest Overfitting across every threshold
+  tried, so threshold search is not reported as a free lunch.
 
 ## Results (2026-07-08 training, 2022→2026 NIFTY 50)
 

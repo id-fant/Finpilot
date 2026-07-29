@@ -7,6 +7,8 @@ from django.contrib import admin
 from django.urls import include, path
 
 from .system import SystemStatusView
+from .dashboard import DashboardSnapshotView
+from .frontend import frontend_index
 
 urlpatterns = [
     path("admin/", admin.site.urls),
@@ -16,4 +18,7 @@ urlpatterns = [
     path("api/quant/", include("portfolio.quant_urls")),
     # The control-room aggregate: config, gates, data state, running actions.
     path("api/system/", SystemStatusView.as_view(), name="system-status"),
+    path("api/dashboard/snapshot/", DashboardSnapshotView.as_view(),
+         name="dashboard-snapshot"),
+    path("", frontend_index, name="frontend"),
 ]

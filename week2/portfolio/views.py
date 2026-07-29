@@ -1,6 +1,7 @@
 """Read-only API views for the `portfolio` app."""
 import csv
 import logging
+import zlib
 from pathlib import Path
 
 import numpy as np
@@ -251,6 +252,25 @@ class JournalEntryListView(generics.ListAPIView):
 ANNUAL_TRADING_DAYS = 252
 WEEKS_PER_YEAR = 52
 
+PROJECTION_METHODS = {
+    "gaussian": {
+        "label": "Gaussian Monte Carlo",
+        "description": "Arithmetic returns sampled from a normal distribution.",
+    },
+    "gbm": {
+        "label": "Geometric Brownian motion",
+        "description": "Lognormal price paths with continuous compounding.",
+    },
+    "student_t": {
+        "label": "Student-t stress",
+        "description": "Fat-tail shocks that generate more extreme paths.",
+    },
+    "mean_reversion": {
+        "label": "Mean-reverting trend",
+        "description": "Log prices pulled toward the estimated return trend.",
+    },
+}
+
 
 # Canonical cost stack lives in core (framework-free, vectorised) — one
 # import, one truth, shared with the orchestrator and the ML dataset builder.
@@ -291,15 +311,15 @@ def _load_backtest_stats() -> dict[str, dict[str, float]]:
 
 
 class MonteCarloProjectionView(APIView):
-    """GET /api/portfolio/projection/?symbol=...&capital=...&horizon_days=...
+    """GET /api/portfolio/projection/?symbol=...&capital=...&method=...
 
     Returns a 1-week (configurable) Monte Carlo projection for a single stock:
     percentile price paths for the fan chart, plus summary stats (expected net
     return, P(profit), avg cost) after Zerodha CNC fees.
 
-    Same maths as `week1/one_week_simulation.py` — that's deliberate; the API
-    and the standalone script must produce identical numbers so a reviewer who
-    runs the CLI sees the same percentiles the dashboard renders.
+    The default Gaussian method follows `week1/one_week_simulation.py`; the
+    other methods compare different return assumptions while preserving the
+    same response shape.
 
     Query params (all optional):
       symbol        NSE ticker, default RELIANCE.NS
@@ -308,6 +328,7 @@ class MonteCarloProjectionView(APIView):
       n_sims        path samples; default 2000 — bigger smooths the bands,
                     smaller responds faster. The fan chart only uses
                     percentiles so >5k buys nothing for the UI.
+      method        gaussian, gbm, student_t, or mean_reversion
 
     WHY default n_sims is lower than the CLI's 10k: this endpoint serves
     interactive UI tweaks; sub-100ms beats sharper bands.
@@ -318,12 +339,21 @@ class MonteCarloProjectionView(APIView):
         capital = float(request.query_params.get("capital", 1000))
         horizon = int(request.query_params.get("horizon_days", 5))
         n_sims = int(request.query_params.get("n_sims", 2000))
+        method = request.query_params.get("method", "gaussian").lower()
 
         # Bracket inputs to sane ranges — defence against accidental
         # `?n_sims=10000000` queries that would tie up a Django thread.
         horizon = max(1, min(horizon, 60))
         n_sims = max(100, min(n_sims, 20_000))
         capital = max(1.0, min(capital, 10_000_000))
+        if method not in PROJECTION_METHODS:
+            return Response(
+                {
+                    "error": f"unknown projection method {method!r}",
+                    "available_methods": list(PROJECTION_METHODS),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         stats_table = _load_backtest_stats()
         if symbol not in stats_table:
@@ -336,6 +366,21 @@ class MonteCarloProjectionView(APIView):
         annual_return = stats_table[symbol]["annual_return_pct"] / 100
         annual_sharpe = stats_table[symbol]["annual_sharpe"]
 
+        # The existing fan chart models portfolio value. The 3D simulation
+        # surface needs the same paths expressed as a stock price. Use the
+        # latest persisted signal price when available; otherwise return an
+        # explicitly labelled index rebased to 100 instead of inventing a quote.
+        from signals.models import Signal
+        latest_price = (
+            Signal.objects
+            .filter(stock__symbol=symbol)
+            .order_by("-date", "-created_at")
+            .values_list("price", flat=True)
+            .first()
+        )
+        starting_price = float(latest_price) if latest_price is not None else 100.0
+        price_scale = "market" if latest_price is not None else "indexed"
+
         # Derive daily mean / std from the 1-yr annual stats. Volatility scales
         # with sqrt(time), so daily_std = annual_vol / sqrt(252) — the famous
         # square-root-of-time identity from quant interview Q14.
@@ -347,13 +392,54 @@ class MonteCarloProjectionView(APIView):
         daily_mean = annual_return / ANNUAL_TRADING_DAYS
         daily_std = annual_vol / np.sqrt(ANNUAL_TRADING_DAYS)
 
-        # Sample (n_sims × horizon) daily returns -> cumprod -> path matrix.
-        # Seeded deterministically per-symbol so reloads don't shimmer.
-        rng = np.random.default_rng(42 + (hash(symbol) % 1000))
-        daily_returns = rng.normal(daily_mean, daily_std, (n_sims, horizon))
-        paths = capital * np.cumprod(1 + daily_returns, axis=1)
+        # Generate the same path-matrix shape for every method so the charts
+        # can switch models without maintaining separate rendering branches.
+        # CRC32 is stable between processes, unlike Python's built-in hash().
+        seed = 42 + zlib.crc32(f"{symbol}:{method}".encode("utf-8"))
+        rng = np.random.default_rng(seed)
+        shocks = rng.normal(size=(n_sims, horizon))
+
+        if method == "gaussian":
+            daily_returns = daily_mean + daily_std * shocks
+            paths = capital * np.cumprod(
+                np.clip(1 + daily_returns, 0.01, None),
+                axis=1,
+            )
+        elif method == "gbm":
+            log_returns = daily_mean - 0.5 * daily_std ** 2 + daily_std * shocks
+            paths = capital * np.exp(np.cumsum(log_returns, axis=1))
+        elif method == "student_t":
+            degrees_freedom = 5
+            fat_tail_shocks = rng.standard_t(
+                degrees_freedom,
+                size=(n_sims, horizon),
+            )
+            fat_tail_shocks /= np.sqrt(
+                degrees_freedom / (degrees_freedom - 2)
+            )
+            daily_returns = daily_mean + daily_std * fat_tail_shocks
+            paths = capital * np.cumprod(
+                np.clip(1 + daily_returns, 0.01, None),
+                axis=1,
+            )
+        else:
+            # Discrete Ornstein-Uhlenbeck dynamics in log-price space. The
+            # long-run target advances with the estimated backtest drift.
+            reversion_speed = 0.18
+            log_levels = np.zeros((n_sims, horizon))
+            previous = np.zeros(n_sims)
+            for day in range(horizon):
+                target = daily_mean * (day + 1)
+                previous = (
+                    previous
+                    + reversion_speed * (target - previous)
+                    + daily_std * shocks[:, day]
+                )
+                log_levels[:, day] = previous
+            paths = capital * np.exp(log_levels)
         # Prepend day-0 (the starting capital) so the chart starts at the input.
         paths = np.column_stack([np.full(n_sims, capital), paths])
+        price_paths = paths / capital * starting_price
 
         # Percentile bands — what the fan chart actually draws. We don't ship
         # the raw 2000×6 matrix to the browser; that's overkill for the cone.
@@ -365,6 +451,11 @@ class MonteCarloProjectionView(APIView):
             f"p{q:02d}": [round(float(v), 2) for v in row]
             for q, row in zip(band_qs, bands)
         }
+        price_bands = np.percentile(price_paths, band_qs, axis=0)
+        price_pctiles = {
+            f"p{q:02d}": [round(float(v), 2) for v in row]
+            for q, row in zip(band_qs, price_bands)
+        }
 
         # Net-of-cost end-value summary at the final day. The cost stack is
         # vectorised — one array expression covers all n_sims paths (no loop).
@@ -374,9 +465,9 @@ class MonteCarloProjectionView(APIView):
         net_pct = (net_ends - capital) / capital * 100
         net_p05, net_p50, net_p95 = np.percentile(net_ends, (5, 50, 95))
 
-        logger.info("MonteCarloProjectionView: %s capital=%.0f horizon=%d "
+        logger.info("MonteCarloProjectionView: %s method=%s capital=%.0f horizon=%d "
                     "n_sims=%d -> exp_net=%.2f%% P(profit)=%.1f%%",
-                    symbol, capital, horizon, n_sims,
+                    symbol, method, capital, horizon, n_sims,
                     float(np.mean(net_pct)), float(np.mean(net_pct > 0)) * 100)
 
         return Response({
@@ -384,11 +475,21 @@ class MonteCarloProjectionView(APIView):
             "capital": capital,
             "horizon_days": horizon,
             "n_sims": n_sims,
+            "method": method,
+            "method_label": PROJECTION_METHODS[method]["label"],
+            "method_description": PROJECTION_METHODS[method]["description"],
+            "available_methods": [
+                {"id": key, **metadata}
+                for key, metadata in PROJECTION_METHODS.items()
+            ],
             # Day index 0..horizon (length horizon+1). The browser uses this as
             # the X axis so it doesn't need to invent its own range.
             "days": list(range(horizon + 1)),
             # Five-band cone — matches the fan chart in one_week_simulation.py.
             "percentiles": pctiles,
+            "starting_price": round(starting_price, 2),
+            "price_scale": price_scale,
+            "price_percentiles": price_pctiles,
             "expected_net_pct": round(float(np.mean(net_pct)), 2),
             "expected_net_end_rs": round(float(np.mean(net_ends)), 2),
             "p05_net_end_rs": round(float(net_p05), 2),

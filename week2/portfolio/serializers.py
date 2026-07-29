@@ -1,7 +1,7 @@
 """DRF serializers for the `portfolio` app."""
 from rest_framework import serializers
 
-from .models import JournalEntry, Order, Position
+from .models import JournalEntry, MarketQuote, Order, Position
 
 
 class PositionSerializer(serializers.ModelSerializer):
@@ -26,7 +26,19 @@ class OrderSerializer(serializers.ModelSerializer):
         model = Order
         fields = [
             "id", "symbol", "signal", "order_type", "side", "quantity",
-            "price", "status", "is_paper", "created_at",
+            "price", "status", "is_paper", "broker_order_id",
+            "last_broker_update", "created_at",
+        ]
+
+
+class MarketQuoteSerializer(serializers.ModelSerializer):
+    symbol = serializers.CharField(source="stock.symbol", read_only=True)
+
+    class Meta:  # pyrefly: ignore[bad-override]  # pyright: ignore[reportIncompatibleVariableOverride]
+        model = MarketQuote
+        fields = [
+            "symbol", "instrument_token", "last_price",
+            "exchange_timestamp", "received_at",
         ]
 
 

@@ -19,6 +19,7 @@ background work.
 from __future__ import annotations
 
 import logging
+import secrets
 import threading
 from datetime import datetime, timezone
 from typing import Any, Callable
@@ -44,8 +45,15 @@ def action_allowed(request) -> bool:
     """
     if settings.DEBUG:
         return True
+    if getattr(request, "user", None) is not None:
+        user = request.user
+        if user.is_authenticated and user.is_staff:
+            return True
     expected = getattr(settings, "ACTIONS_TOKEN", "")
-    return bool(expected) and request.headers.get("X-Actions-Token") == expected
+    supplied = request.headers.get("X-Actions-Token", "")
+    return bool(expected) and bool(supplied) and secrets.compare_digest(
+        supplied, expected,
+    )
 
 
 def launch(name: str, fn: Callable[[], Any]) -> str:
@@ -69,6 +77,8 @@ def launch(name: str, fn: Callable[[], Any]) -> str:
         stage="session", decision="START",
         detail=f"dashboard action '{name}' launched",
     )
+    from finpilot.events import publish_dashboard_event
+    publish_dashboard_event("action.started", {"action": name})
 
     def _run() -> None:
         from .models import JournalEntry as JE  # thread gets its own import
@@ -81,12 +91,18 @@ def launch(name: str, fn: Callable[[], Any]) -> str:
                 detail=f"dashboard action '{name}' finished — {result}",
                 payload={"action": name, "result": result},
             )
+            publish_dashboard_event(
+                "action.finished", {"action": name, "result": result},
+            )
         except Exception as e:  # noqa: BLE001 - surface, never crash the thread silently
             state["error"] = str(e)
             logger.error("action '%s' failed: %s", name, e, exc_info=True)
             JE.objects.create(
                 stage="session", decision="FAILED",
                 detail=f"dashboard action '{name}' failed — {e}",
+            )
+            publish_dashboard_event(
+                "action.failed", {"action": name, "error": str(e)},
             )
         finally:
             state["running"] = False

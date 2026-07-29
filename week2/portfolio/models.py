@@ -5,6 +5,7 @@ wired up. JournalEntry is the agentic layer's audit trail — every decision the
 analyst gate or the trading-session supervisor makes lands here.
 """
 from django.db import models
+from django.db.models import Q
 
 from signals.models import Signal, Stock
 
@@ -33,6 +34,12 @@ class Position(models.Model):
 
     class Meta:
         ordering = ["-entry_date"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["stock"], condition=Q(is_open=True),
+                name="one_open_position_per_stock",
+            ),
+        ]
 
     def __str__(self) -> str:
         state = "open" if self.is_open else "closed"
@@ -64,13 +71,43 @@ class Order(models.Model):
     price = models.DecimalField(max_digits=12, decimal_places=2)
     status = models.CharField(max_length=10, choices=STATUSES, default="PENDING")
     is_paper = models.BooleanField(default=True)
+    broker_order_id = models.CharField(
+        max_length=64, null=True, blank=True, unique=True,
+    )
+    fill_applied = models.BooleanField(default=False)
+    last_broker_update = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         ordering = ["-created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["signal", "side"],
+                condition=Q(signal__isnull=False),
+                name="unique_order_signal_side",
+            ),
+        ]
 
     def __str__(self) -> str:
         return f"{self.side} {self.quantity} {self.stock.symbol} [{self.status}]"
+
+
+class MarketQuote(models.Model):
+    """Latest exchange quote shared by all API and dashboard processes."""
+
+    stock = models.OneToOneField(
+        Stock, on_delete=models.CASCADE, related_name="market_quote",
+    )
+    instrument_token = models.BigIntegerField(unique=True)
+    last_price = models.DecimalField(max_digits=12, decimal_places=2)
+    exchange_timestamp = models.DateTimeField(null=True, blank=True)
+    received_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["stock__symbol"]
+
+    def __str__(self) -> str:
+        return f"{self.stock.symbol} @ {self.last_price}"
 
 
 class JournalEntry(models.Model):
@@ -115,3 +152,26 @@ class JournalEntry(models.Model):
     def __str__(self) -> str:
         target = self.symbol or "session"
         return f"[{self.stage}] {target}: {self.decision}"
+
+
+class ActionReceipt(models.Model):
+    """Durable idempotency receipt for a dashboard-triggered action.
+
+    A browser retry, double-click, proxy replay, or network timeout must never
+    trigger a second trading run. The unique key makes that guarantee durable
+    across Django processes and restarts; the in-memory runner lock only
+    prevents overlap inside one process.
+    """
+
+    key = models.CharField(max_length=80, unique=True)
+    action = models.CharField(max_length=40)
+    status = models.CharField(max_length=24, default="accepted")
+    response = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self) -> str:
+        return f"{self.action}:{self.key} [{self.status}]"

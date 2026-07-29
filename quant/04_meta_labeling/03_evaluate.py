@@ -51,6 +51,12 @@ def main() -> int:
     print(f"OOS rows {len(oof)} | AUC {meta['oos_auc']} | deploy threshold {thr}")
     print(f"unfiltered EV Rs.{meta['oos_ev_unfiltered_rs']}/trade -> "
           f"filtered Rs.{meta['oos_ev_filtered_rs']}/trade\n")
+    dsr = meta.get("deflated_sharpe", {})
+    pbo = meta.get("probability_backtest_overfitting", {})
+    if dsr.get("probability") is not None:
+        print(f"deflated-Sharpe confidence {dsr['probability']:.1%} | "
+              f"CSCV backtest-overfitting probability "
+              f"{pbo.get('probability', float('nan')):.1%}\n")
     print(sweep.to_string(index=False))
     print("\npermutation importance (last OOS year):")
     for f, v in sorted(meta["permutation_importance"].items(),

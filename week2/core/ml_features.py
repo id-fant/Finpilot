@@ -58,7 +58,13 @@ def enrich_features(df: pd.DataFrame) -> pd.DataFrame:
     ind["bb_pctb"] = (close - ind["bb_lower"]) / band_width.replace(0, pd.NA)
 
     sma200 = close.rolling(200).mean()
+    sma50 = close.rolling(50).mean()
     ind["dist_sma200"] = close / sma200 - 1
+    ind["trend_ok"] = (
+        (close > sma200)
+        & (sma50 > sma200)
+        & (sma200 > sma200.shift(20))
+    )
 
     ret = close.pct_change()
     ind["vol20"] = ret.rolling(20).std()
@@ -99,7 +105,15 @@ def vectorized_votes(ind: pd.DataFrame) -> pd.DataFrame:
     ind["sell_votes"] = (sell_rsi.astype(int) + crossed_down.astype(int)
                          + sell_bb.astype(int))
 
-    buy = (ind["buy_votes"] >= 2) & (ind["buy_votes"] > ind["sell_votes"])
+    # Train on the same long-term trend regime accepted by live generation.
+    # Warm-up rows are False here and are skipped by the dataset builder.
+    trend_warmed_up = ind["Close"].rolling(200).mean().shift(20).notna()
+    trend_eligible = ind["trend_ok"] | ~trend_warmed_up
+    buy = (
+        (ind["buy_votes"] >= 2)
+        & (ind["buy_votes"] > ind["sell_votes"])
+        & trend_eligible
+    )
     sell = (ind["sell_votes"] >= 2) & (ind["sell_votes"] > ind["buy_votes"])
     ind["vec_signal"] = "HOLD"
     ind.loc[buy, "vec_signal"] = "BUY"

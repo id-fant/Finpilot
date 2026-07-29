@@ -39,6 +39,10 @@ from sklearn.metrics import roc_auc_score
 ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT / "week2"))
 from core.ml_features import FEATURES  # noqa: E402
+from core.quant_math import (  # noqa: E402
+    deflated_sharpe_ratio,
+    probability_of_backtest_overfitting,
+)
 
 HERE = Path(__file__).resolve().parent
 DATASET = HERE / "data" / "signals_dataset.csv"
@@ -125,6 +129,28 @@ def pick_threshold(oof: pd.DataFrame) -> tuple[float, list[dict]]:
     return best_thr, sweep
 
 
+def selection_bias_diagnostics(
+    oof: pd.DataFrame, threshold_sweep: list[dict], deployed: float
+) -> tuple[dict, dict]:
+    """Deflated Sharpe and CSCV PBO across every threshold tried."""
+    thresholds = [float(row["threshold"]) for row in threshold_sweep]
+    net_returns = oof["net_pct"].to_numpy(dtype=float) / 100.0
+    probabilities = oof["prob"].to_numpy(dtype=float)
+    matrix = np.column_stack([
+        np.where(probabilities >= threshold, net_returns, 0.0)
+        for threshold in thresholds
+    ])
+    trial_sharpes = [
+        float(column.mean() / column.std(ddof=1))
+        if column.std(ddof=1) > 0 else 0.0
+        for column in matrix.T
+    ]
+    deployed_returns = matrix[:, thresholds.index(float(deployed))]
+    dsr = deflated_sharpe_ratio(deployed_returns, trial_sharpes)
+    pbo = probability_of_backtest_overfitting(matrix)
+    return dsr, pbo
+
+
 def main() -> int:
     if not DATASET.exists():
         raise SystemExit(f"{DATASET} missing — run 01_build_dataset.py first")
@@ -140,9 +166,12 @@ def main() -> int:
     auc = roc_auc_score(oof["label"], oof["prob"])
     base_ev = float(oof["net_rs"].mean())
     kept = oof[oof["prob"] >= threshold]
+    dsr, pbo = selection_bias_diagnostics(oof, sweep, threshold)
     print(f"\nOOS overall: AUC {auc:.3f} | unfiltered EV Rs.{base_ev:.0f}/trade"
           f" | filtered@{threshold} EV Rs.{kept['net_rs'].mean():.0f}/trade "
           f"({len(kept)}/{len(oof)} kept)")
+    print(f"selection bias: deflated-Sharpe probability "
+          f"{dsr['probability']:.1%} | CSCV PBO {pbo['probability']:.1%}")
 
     # Final model: fit on everything. Validation already happened above —
     # shipping a model trained on less data than we have would be a waste.
@@ -174,6 +203,8 @@ def main() -> int:
         "oos_auc": round(float(auc), 4),
         "oos_ev_unfiltered_rs": round(base_ev, 1),
         "oos_ev_filtered_rs": round(float(kept["net_rs"].mean()), 1),
+        "deflated_sharpe": dsr,
+        "probability_backtest_overfitting": pbo,
         "threshold_sweep": sweep,
         "permutation_importance": importances,
     }, indent=2), encoding="utf-8")

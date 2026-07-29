@@ -58,7 +58,7 @@ function Sidebar({ active, onNavigate, open, onClose }) {
         <div className="brand-mark">F</div>
         <div>
           <div className="brand-name">FinPilot</div>
-          <div className="brand-sub">NIFTY-50 · agentic</div>
+          <div className="brand-sub">NIFTY 50 · decision system</div>
         </div>
       </div>
       {NAV.map(sec => (
@@ -78,7 +78,8 @@ function Sidebar({ active, onNavigate, open, onClose }) {
       ))}
       <div className="side-foot">
         <div className="muted" style={{ fontSize: 11, padding: '0 10px', lineHeight: 1.5 }}>
-          Paper broker · signals refresh 09:05 IST
+          <span className="side-foot-label">Session</span>
+          Paper broker · signal cycle 09:05 IST
         </div>
       </div>
     </aside>
@@ -86,7 +87,7 @@ function Sidebar({ active, onNavigate, open, onClose }) {
 }
 
 // ── Topbar: title, live status, refresh, mode toggle ───────────────────────
-function Topbar({ view, online, lastUpdated, error, onRefresh, uiMode, onToggleMode, onOpenMenu }) {
+function Topbar({ view, online, lastUpdated, error, connection, onRefresh, uiMode, onToggleMode, onOpenMenu }) {
   return (
     <div className="topbar">
       <button className="hamburger" onClick={onOpenMenu}><Icon.Menu /></button>
@@ -94,7 +95,7 @@ function Topbar({ view, online, lastUpdated, error, onRefresh, uiMode, onToggleM
       <div className="topbar-spacer" />
       <div className={'status-chip ' + (online ? 'online' : error ? 'offline' : '')}>
         <span className="dot" />
-        {online && lastUpdated ? `live · ${lastUpdated.toLocaleTimeString()}`
+        {online && lastUpdated ? `${connection?.stream === 'connected' ? 'live' : 'snapshot'} · ${lastUpdated.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'})}`
           : error ? 'API offline' : 'connecting…'}
       </div>
       <button className="btn" title="Refresh data now"
@@ -102,15 +103,46 @@ function Topbar({ view, online, lastUpdated, error, onRefresh, uiMode, onToggleM
               onClick={onRefresh}>
         <Icon.Refresh /> Refresh
       </button>
-      <div className="mode-toggle" role="group" aria-label="UI mode">
+      <div className="mode-toggle" role="group" aria-label="Choose interface style">
+        <span className="mode-toggle-label">View</span>
+        <button className={uiMode === 'friendly' ? 'active' : ''}
+                aria-pressed={uiMode === 'friendly'}
+                onClick={() => onToggleMode('friendly')}>
+          <Icon.Sun /> Friendly
+        </button>
         <button className={uiMode === 'terminal' ? 'active' : ''}
+                aria-pressed={uiMode === 'terminal'}
                 onClick={() => onToggleMode('terminal')}>
           <Icon.Terminal /> Terminal
         </button>
-        <button className={uiMode === 'minimal' ? 'active' : ''}
-                onClick={() => onToggleMode('minimal')}>
-          <Icon.Sun /> Minimal
-        </button>
+      </div>
+    </div>
+  );
+}
+
+// A compact market tape anchors Terminal mode and becomes a calm context
+// summary in Friendly mode. It only reflects API data; no synthetic prices.
+function MarketRibbon({ signals = [], online }) {
+  const rows = signals.slice(0, 8);
+  if (!rows.length) {
+    return (
+      <div className="market-ribbon is-empty" aria-label="Market data status">
+        <span className="market-kicker">NSE</span>
+        <span>{online ? 'Waiting for today’s signal snapshot' : 'Connect the API to load market context'}</span>
+      </div>
+    );
+  }
+  return (
+    <div className="market-ribbon" aria-label="Latest tracked prices">
+      <span className="market-kicker">NSE / LIVE</span>
+      <div className="market-track">
+        {rows.map(row => (
+          <span className="market-quote" key={row.id || row.symbol}>
+            <b>{stripNS(row.symbol)}</b>
+            <span className="mono">₹{row.price}</span>
+            <span className={(row.signal_type || '').toLowerCase()}>{row.signal_type}</span>
+          </span>
+        ))}
       </div>
     </div>
   );
@@ -129,4 +161,12 @@ function SignalPill({ signal, symbol }) {
   );
 }
 
-Object.assign(window, { Icon, Sidebar, Topbar, Spark, SignalPill, NAV });
+Object.assign(window, {
+  Icon,
+  Sidebar,
+  Topbar: React.memo(Topbar),
+  MarketRibbon: React.memo(MarketRibbon),
+  Spark: React.memo(Spark),
+  SignalPill: React.memo(SignalPill),
+  NAV,
+});

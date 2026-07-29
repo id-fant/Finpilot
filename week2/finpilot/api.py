@@ -14,8 +14,12 @@ Two pieces of plumbing that were drifting into copy-paste across the apps:
 from __future__ import annotations
 
 import logging
+import uuid
 from typing import Any, Callable
 
+from django.conf import settings
+from django.utils.decorators import method_decorator
+from django.views.decorators.csrf import csrf_protect
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -29,6 +33,7 @@ def result_count(response) -> int:
     return data.get("count", 0) if isinstance(data, dict) else len(data)
 
 
+@method_decorator(csrf_protect, name="dispatch")
 class ActionView(APIView):
     """POST endpoint that launches a named background task.
 
@@ -47,14 +52,53 @@ class ActionView(APIView):
 
     def post(self, request):
         from portfolio import runner
+        from portfolio.models import ActionReceipt
+
         if not runner.action_allowed(request):
             return Response(
                 {"error": "actions are disabled — set ACTIONS_TOKEN and send "
                           "X-Actions-Token, or run with DEBUG=True"},
                 status=status.HTTP_403_FORBIDDEN)
+        raw_key = request.headers.get("Idempotency-Key", "").strip()
+        if not raw_key and not settings.DEBUG:
+            return Response(
+                {"error": "Idempotency-Key header is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        key = raw_key or f"dev-{uuid.uuid4()}"
+        if len(key) > 80:
+            return Response(
+                {"error": "Idempotency-Key must be at most 80 characters"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        receipt, created = ActionReceipt.objects.get_or_create(
+            key=key,
+            defaults={"action": self.action_name},
+        )
+        if not created:
+            if receipt.action != self.action_name:
+                return Response(
+                    {"error": "idempotency key was already used for another action"},
+                    status=status.HTTP_409_CONFLICT,
+                )
+            return Response(
+                {**receipt.response, "duplicate": True, "idempotency_key": key},
+                status=status.HTTP_200_OK,
+            )
+
         state = runner.launch(self.action_name, self.get_task())
+        payload = {
+            "action": self.action_name,
+            "status": state,
+            "idempotency_key": key,
+            "duplicate": False,
+        }
+        receipt.status = state
+        receipt.response = payload
+        receipt.save(update_fields=["status", "response", "updated_at"])
         logger.info("%s: %s", type(self).__name__, state)
         return Response(
-            {"action": self.action_name, "status": state},
+            payload,
             status=(status.HTTP_202_ACCEPTED if state == "started"
                     else status.HTTP_409_CONFLICT))

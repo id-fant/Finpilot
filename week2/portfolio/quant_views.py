@@ -98,15 +98,28 @@ class MarkowitzWeightsView(APIView):
         returns = pd.DataFrame(
             {s: df["Close"].pct_change() for s, df in panel.items()}).dropna()
         mean = np.asarray(returns.mean()) * sharpe.TRADING_DAYS
-        cov = np.asarray(returns.cov()) * sharpe.TRADING_DAYS
+        cov = sharpe.robust_covariance(returns)
         weights = sharpe.max_sharpe_weights(mean, cov)
+        risk_parity = sharpe.equal_risk_contribution_weights(cov)
         # Sort the (symbol, weight) pairs BEFORE building dicts — sorting the
         # dicts by r["weight"] types as str|float and trips the checkers.
         ranked = sorted(zip(panel.keys(), weights), key=lambda kv: -float(kv[1]))
         out = [{"symbol": s, "weight": round(float(w), 4)} for s, w in ranked]
+        risk_ranked = sorted(
+            zip(panel.keys(), risk_parity), key=lambda kv: -float(kv[1])
+        )
+        risk_out = [
+            {"symbol": s, "weight": round(float(w), 4)}
+            for s, w in risk_ranked
+        ]
         logger.info("MarkowitzWeightsView: top %s @ %.1f%%",
                     out[0]["symbol"], out[0]["weight"] * 100)
-        return Response({"weights": out, "period": "1y"})
+        return Response({
+            "weights": out,
+            "risk_parity_weights": risk_out,
+            "covariance": "Ledoit-Wolf",
+            "period": "1y",
+        })
 
 
 class MLModelView(APIView):

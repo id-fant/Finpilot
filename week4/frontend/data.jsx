@@ -9,7 +9,7 @@
 // every 30s, plus an imperative refetch() so an action button can refresh
 // immediately instead of waiting for the next tick.
 
-const FINPILOT_API = 'http://127.0.0.1:8000/api';
+const FINPILOT_API = (import.meta.env.VITE_API_BASE || '/api').replace(/\/$/, '');
 const POLL_MS = 30_000;
 
 // ── Formatting (Indian numbering: 12,34,567.89) ─────────────────────────────
@@ -43,7 +43,9 @@ function unwrapDRF(data) {
 }
 
 async function getJSON(path) {
-  const res = await fetch(`${FINPILOT_API}${path}`);
+  const res = await fetch(`${FINPILOT_API}${path}`, {
+    credentials: 'same-origin',
+  });
   if (!res.ok) throw new Error(`${path} → HTTP ${res.status}`);
   return res.json();
 }
@@ -59,35 +61,62 @@ async function getJSON(path) {
 //   online / lastUpdated / error / refetch
 function useFinPilot() {
   const [state, setState] = React.useState({
-    signals: [], signalMap: {}, positions: null, orders: [], journal: [],
+    signals: [], signalMap: {}, positions: null, orders: [], journal: [], quotes: [],
     system: null, online: false, lastUpdated: null, error: null,
+    connection: {
+      api: 'connecting', stream: 'connecting', market: 'unknown',
+      dataAgeMs: null, lastEvent: null,
+    },
   });
-  const tick = React.useRef(0);
+  const refreshTimer = React.useRef(null);
+  const pollInFlight = React.useRef(null);
 
-  const poll = React.useCallback(async () => {
-    const [sig, port, ord, jour, sys] = await Promise.allSettled([
-      getJSON('/signals/latest/'),
-      getJSON('/portfolio/'),
-      getJSON('/portfolio/orders/'),
-      getJSON('/portfolio/journal/'),
-      getJSON('/system/'),
-    ]);
-    const val = (r) => (r.status === 'fulfilled' ? r.value : null);
-    const signals = unwrapDRF(val(sig));
-    const signalMap = {};
-    for (const s of signals) signalMap[stripNS(s.symbol)] = s;
-    const anyOk = [sig, port, ord, jour, sys].some(r => r.status === 'fulfilled');
-
-    setState({
-      signals, signalMap,
-      positions: val(port),
-      orders: unwrapDRF(val(ord)),
-      journal: unwrapDRF(val(jour)),
-      system: val(sys),
-      online: anyOk,
-      lastUpdated: anyOk ? new Date() : null,
-      error: anyOk ? null : (sig.reason?.message || 'API unreachable'),
+  const poll = React.useCallback(() => {
+    if (pollInFlight.current) return pollInFlight.current;
+    const request = (async () => {
+      try {
+        const snapshot = await getJSON('/dashboard/snapshot/');
+        const quotes = snapshot.quotes || [];
+        const quoteMap = Object.fromEntries(
+          quotes.map(q => [stripNS(q.symbol), q])
+        );
+        const signals = (snapshot.signals || []).map(signal => {
+          const quote = quoteMap[stripNS(signal.symbol)];
+          return quote ? {...signal, price: quote.last_price} : signal;
+        });
+        const signalMap = {};
+        for (const s of signals) signalMap[stripNS(s.symbol)] = s;
+        const received = new Date(snapshot.snapshot_at || Date.now());
+        setState(previous => ({
+          ...previous,
+          signals, signalMap, quotes,
+          positions: snapshot.positions,
+          orders: snapshot.orders || [],
+          journal: snapshot.journal || [],
+          system: snapshot.system,
+          online: true,
+          lastUpdated: received,
+          error: null,
+          connection: {
+            ...previous.connection,
+            api: 'connected',
+            market: snapshot.system?.data?.latest_signal_date ? 'snapshot' : 'waiting',
+            dataAgeMs: Math.max(0, Date.now() - received.getTime()),
+          },
+        }));
+      } catch (error) {
+        setState(previous => ({
+          ...previous,
+          online: false,
+          error: error.message,
+          connection: {...previous.connection, api: 'disconnected'},
+        }));
+      }
+    })();
+    pollInFlight.current = request.finally(() => {
+      pollInFlight.current = null;
     });
+    return pollInFlight.current;
   }, []);
 
   React.useEffect(() => {
@@ -95,8 +124,88 @@ function useFinPilot() {
     const run = () => { if (alive) poll(); };
     run();
     const id = setInterval(run, POLL_MS);
-    return () => { alive = false; clearInterval(id); };
-  }, [poll, tick.current]);
+    return () => {
+      alive = false;
+      clearInterval(id);
+      if (refreshTimer.current) clearTimeout(refreshTimer.current);
+    };
+  }, [poll]);
+
+  React.useEffect(() => {
+    let socket;
+    let retryTimer;
+    let closed = false;
+    let attempts = 0;
+
+    const connect = () => {
+      const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      socket = new WebSocket(`${protocol}//${location.host}/ws/dashboard/`);
+      socket.onopen = () => {
+        attempts = 0;
+        setState(previous => ({
+          ...previous,
+          connection: {...previous.connection, stream: 'connected'},
+        }));
+      };
+      socket.onmessage = event => {
+        const message = JSON.parse(event.data);
+        if (message.event === 'quote.updated' && message.payload?.symbol) {
+          const symbol = stripNS(message.payload.symbol);
+          setState(previous => {
+            const signals = previous.signals.map(signal =>
+              stripNS(signal.symbol) === symbol
+                ? {...signal, price: message.payload.last_price}
+                : signal
+            );
+            const signalMap = {...previous.signalMap};
+            if (signalMap[symbol]) {
+              signalMap[symbol] = {
+                ...signalMap[symbol], price: message.payload.last_price,
+              };
+            }
+            return {
+              ...previous, signals, signalMap, lastUpdated: new Date(),
+              connection: {
+                ...previous.connection, stream: 'connected', market: 'live',
+                dataAgeMs: 0, lastEvent: message.event,
+              },
+            };
+          });
+          return;
+        }
+        setState(previous => ({
+          ...previous,
+          connection: {
+            ...previous.connection,
+            stream: 'connected',
+            lastEvent: message.event,
+          },
+        }));
+        // Collapse event bursts (journal + action completion) into one snapshot.
+        if (message.event !== 'connection.ready') {
+          clearTimeout(refreshTimer.current);
+          refreshTimer.current = setTimeout(poll, 120);
+        }
+      };
+      socket.onclose = () => {
+        if (closed) return;
+        attempts += 1;
+        setState(previous => ({
+          ...previous,
+          connection: {...previous.connection, stream: 'reconnecting'},
+        }));
+        retryTimer = setTimeout(connect, Math.min(30_000, 750 * 2 ** attempts));
+      };
+      socket.onerror = () => socket.close();
+    };
+
+    connect();
+    return () => {
+      closed = true;
+      clearTimeout(retryTimer);
+      if (socket) socket.close();
+    };
+  }, [poll]);
 
   // Imperative refresh — bump the ref so the effect re-subscribes and fires now.
   const refetch = React.useCallback(() => { poll(); }, [poll]);
@@ -138,8 +247,19 @@ function useApi(path, { poll = 0, enabled = true } = {}) {
 
 // POST an action (refresh-signals / execute-orders); returns the HTTP status.
 async function postAction(path) {
+  const cookie = document.cookie.split('; ').find(row => row.startsWith('csrftoken='));
+  const csrf = cookie ? decodeURIComponent(cookie.split('=').slice(1).join('=')) : '';
+  const idempotencyKey = crypto.randomUUID
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const res = await fetch(`${FINPILOT_API}${path}`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-CSRFToken': csrf,
+      'Idempotency-Key': idempotencyKey,
+    },
   });
   const body = await res.json().catch(() => ({}));
   return { status: res.status, body };

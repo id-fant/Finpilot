@@ -32,5 +32,6 @@ class SignalSerializer(serializers.ModelSerializer):
         model = Signal
         fields = [
             "id", "symbol", "name", "date", "signal_type", "price",
-            "rsi", "macd", "macd_signal", "reason", "ml_prob", "created_at",
+            "rsi", "macd", "macd_signal", "reason", "ml_prob",
+            "annualized_vol", "trend_regime", "created_at",
         ]

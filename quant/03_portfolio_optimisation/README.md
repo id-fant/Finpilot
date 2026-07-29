@@ -9,7 +9,7 @@ portfolio's risk is not the average of its parts, it is their **covariance**.
 | File | What it does |
 |------|--------------|
 | `01_markowitz.py` | draws the efficient frontier from 20,000 random portfolios |
-| `02_sharpe_maximisation.py` | solves directly for the maximum-Sharpe weights |
+| `02_sharpe_maximisation.py` | Ledoit-Wolf covariance, max-Sharpe and equal-risk-contribution weights |
 
 ## The thread
 
@@ -22,6 +22,12 @@ portfolio's risk is not the average of its parts, it is their **covariance**.
    `02` solves for it exactly with a constrained optimiser (SciPy SLSQP). The
    answer is the **tangency portfolio** — the highest risk-adjusted return
    available from the basket.
+
+## Robust live weights
+
+`02` also reports an equal-risk-contribution portfolio. Ledoit-Wolf shrinkage
+stabilizes noisy correlations, while risk parity avoids relying entirely on
+fragile expected-return estimates.
 
 ## The honest caveat
 Optimisation is fitted to the **past**. Expected returns are notoriously hard

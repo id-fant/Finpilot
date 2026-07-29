@@ -34,7 +34,7 @@ open position), and opens the dashboard at <http://127.0.0.1:5500> in about
 
 ![pyrefly](https://img.shields.io/badge/pyrefly-0%20errors-brightgreen)
 ![pyright](https://img.shields.io/badge/pyright-0%20errors-brightgreen)
-![tests](https://img.shields.io/badge/pytest-8%2F8-brightgreen)
+![tests](https://img.shields.io/badge/pytest-23%2F23-brightgreen)
 &nbsp;_two type-checkers + tests run on every push ([.github/workflows/ci.yml](.github/workflows/ci.yml))._
 
 For a real run (live yfinance prices + LLM-generated explanations):
@@ -105,8 +105,9 @@ is its own multi-week project. For now this is about learning, not earning.
   grounded in recent news sentiment and earnings-report retrieval (RAG).
 - Turns signals into **paper or live orders** via Zerodha Kite (paper is the
   default; live is a one-flag opt-in).
-- A **React dashboard** renders signals, the order book, and open positions,
-  refreshing every 30 s.
+- A **Vite + React dashboard** renders signals, orders, positions and the
+  decision journal in either a guided Friendly mode or a dense Terminal mode.
+  WebSockets push quote/order changes; a 30-second snapshot is the fallback.
 - A **Monte Carlo "Simulation" panel** shows a 1-week probability cone for any
   NIFTY 50 ticker, with Zerodha costs applied — it reports the spread of
   outcomes, not a single misleading point estimate.
@@ -138,7 +139,7 @@ The parts I'd actually talk about in an interview:
 | `python run.py --refresh` | Live yfinance fetch + Gemini explanations (needs `GEMINI_API_KEY`) |
 | `python week1/one_week_simulation.py` | CLI Monte Carlo on the 1-yr backtest stats + saves a fan-chart PNG |
 | `python scripts/run_integrated_demo.py --refresh-db` | Runs the whole pipeline offline in one go: synthetic data → signal engine → paper broker → pairs cointegration → Markowitz weights → Monte Carlo |
-| `cd week2 && pytest` | 8 tests covering the core engine, demo-data idempotency, and the serializers |
+| `cd week2 && pytest` | 23 tests covering the engine, API/security contracts, idempotency, quotes, and exactly-once fill reconciliation |
 
 ## Tech stack
 
@@ -179,7 +180,32 @@ copy .env.example .env
 python manage.py migrate && python manage.py seed_stocks
 python smoke_test.py                  # verify the signal pipeline
 python manage.py seed_demo            # populate dashboard demo data
-python manage.py runserver
+python -m uvicorn finpilot.asgi:application --port 8000
+
+# Week 4 — Vite dashboard (second terminal)
+cd ../week4/frontend && npm ci && npm run dev
+```
+
+## Production image
+
+The multi-stage image builds the pinned React bundle, installs the Django
+runtime, applies migrations, and serves UI + REST + WebSockets on one origin:
+
+```bash
+docker build -f week4/Dockerfile -t finpilot .
+docker run --rm -p 8000:8000 \
+  -e DJANGO_DEBUG=False \
+  -e DJANGO_SECRET_KEY=replace-me \
+  -e DJANGO_ALLOWED_HOSTS=localhost,127.0.0.1 \
+  -e SECURE_SSL_REDIRECT=False finpilot
+```
+
+On this machine Avast re-signs TLS. For a local build only, pass its generated
+bundle as an ephemeral BuildKit secret:
+
+```bash
+docker build --secret id=ca_bundle,src=.cache/ca_bundle.pem \
+  -f week4/Dockerfile -t finpilot .
 ```
 
 ## Market focus

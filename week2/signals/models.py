@@ -46,6 +46,9 @@ class Signal(models.Model):
     # quant/04_meta_labeling. Null when the gate isn't in play (no model file,
     # HOLD signal, or scoring failed) — null means "unscored", never 0.
     ml_prob = models.FloatField(null=True, blank=True)
+    # Inputs to execution-time risk sizing and useful dashboard diagnostics.
+    annualized_vol = models.FloatField(null=True, blank=True)
+    trend_regime = models.CharField(max_length=12, default="unknown")
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

@@ -10,7 +10,8 @@ separates a quant from a backend developer who happens to touch finance.
 |--------|-------|-----------|
 | `01_mean_reversion/` | stationarity → cointegration → pairs trading | trade a stationary spread, market-neutral |
 | `02_factor_models/` | CAPM → multi-factor model → return decomposition | explain returns by systematic factors |
-| `03_portfolio_optimisation/` | efficient frontier → max-Sharpe weights | how to *weight* a basket, not just pick it |
+| `03_portfolio_optimisation/` | efficient frontier → shrinkage/risk parity | robustly weight a basket, not just pick it |
+| `04_meta_labeling/` | walk-forward ML gate + DSR/PBO | filter signals without hiding selection bias |
 
 Each folder has its own README and numbered, runnable scripts — run them in
 order; later scripts build on earlier ideas.

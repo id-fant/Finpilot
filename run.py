@@ -10,7 +10,7 @@ What it does, in order:
   3. Writes week2/.env from .env.example, with a fresh random SECRET_KEY, if
      no .env is present yet.
   4. Applies database migrations and seeds the starter NIFTY universe.
-  5. Starts TWO servers and leaves them running until you press Ctrl+C:
+  5. Starts the API and dashboard (plus the Kite gateway when BROKER=kite):
        - the Django REST API           http://127.0.0.1:8000
        - the static week4 dashboard    http://127.0.0.1:5500
   6. Opens the dashboard in your browser.
@@ -35,6 +35,8 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -49,7 +51,7 @@ for _stream in (sys.stdout, sys.stderr):
     try:
         # `reconfigure` exists on TextIOWrapper at runtime but is missing from
         # the typeshed TextIO Protocol — the try/except below is the real guard.
-        _stream.reconfigure(encoding="utf-8", errors="replace")  # pyrefly: ignore[missing-attribute]
+        _stream.reconfigure(encoding="utf-8", errors="replace")  # pyrefly: ignore[missing-attribute]  # pyright: ignore[reportAttributeAccessIssue]
     except (AttributeError, ValueError):  # pragma: no cover - very old Python
         pass
 
@@ -57,7 +59,7 @@ for _stream in (sys.stdout, sys.stderr):
 ROOT = Path(__file__).resolve().parent
 WEEK2 = ROOT / "week2"                       # the Django backend
 VENV = WEEK2 / ".venv"                       # the one project virtualenv
-FRONTEND = ROOT / "week4" / "frontend"       # the static dashboard
+FRONTEND = ROOT / "week4" / "frontend"       # Vite React dashboard
 REQUIREMENTS = WEEK2 / "requirements.txt"
 
 # Fixed ports. They are hardcoded on purpose: settings.py whitelists port 5500
@@ -82,6 +84,18 @@ def fail(message: str) -> int:
     """Print an error and return a non-zero exit code."""
     print(f"\n\033[1;31m[finpilot] ERROR:\033[0m {message}", file=sys.stderr)
     return 1
+
+
+def ports_in_use(*ports: int) -> list[int]:
+    """Return fixed localhost ports that cannot be bound right now."""
+    busy: list[int] = []
+    for port in ports:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            try:
+                probe.bind(("127.0.0.1", port))
+            except OSError:
+                busy.append(port)
+    return busy
 
 
 # ── Environment bootstrap ────────────────────────────────────────────────────
@@ -111,7 +125,10 @@ def deps_satisfied(py: Path) -> bool:
     A cheap proxy for "requirements are installed" — far faster than re-running
     pip on every launch. If any import fails, we (re)install.
     """
-    probe = "import django, rest_framework, celery, pandas, yfinance, corsheaders"
+    probe = (
+        "import django, rest_framework, celery, pandas, yfinance, corsheaders, "
+        "channels, uvicorn, websockets"
+    )
     result = subprocess.run([str(py), "-c", probe], capture_output=True)
     return result.returncode == 0
 
@@ -195,38 +212,77 @@ def refresh_signals(py: Path, offline: bool) -> None:
                        cwd=WEEK2, env=CHILD_ENV, check=False)
 
 
+def ensure_frontend_deps() -> str:
+    """Install the pinned Vite toolchain once and return the npm executable."""
+    npm = shutil.which("npm.cmd") or shutil.which("npm")
+    if npm is None:
+        raise RuntimeError(
+            "Node.js/npm is required for the dashboard. Install Node.js 20+.")
+    vite_shim = (
+        FRONTEND / "node_modules" / ".bin"
+        / ("vite.cmd" if os.name == "nt" else "vite")
+    )
+    # Checking only node_modules/vite is insufficient: an interrupted npm run
+    # can leave packages behind without generating the executable .bin shims.
+    if not vite_shim.exists():
+        say("installing frontend dependencies (first run only) ...")
+        install_command = "ci" if (FRONTEND / "package-lock.json").exists() else "install"
+        subprocess.run(
+            [npm, install_command, "--no-audit", "--no-fund"],
+            cwd=FRONTEND, env=CHILD_ENV, check=True,
+        )
+    return npm
+
+
 # ── The two long-running servers ─────────────────────────────────────────────
-def start_servers(py: Path) -> list[subprocess.Popen]:
+def start_servers(py: Path, npm: str) -> list[subprocess.Popen]:
     """Start the API and the dashboard server; return both process handles."""
     say(f"starting the Django API     ->  http://127.0.0.1:{API_PORT}")
     # --noreload: one process, not two. The launcher is for RUNNING the app,
     # not editing it, so the autoreloader just complicates a clean shutdown.
     api = subprocess.Popen(
-        [str(py), "manage.py", "runserver", "--noreload", f"127.0.0.1:{API_PORT}"],
+        [str(py), "-m", "uvicorn", "finpilot.asgi:application",
+         "--host", "127.0.0.1", "--port", str(API_PORT)],
         cwd=WEEK2, env=CHILD_ENV,
     )
 
     say(f"starting the dashboard      ->  http://127.0.0.1:{DASH_PORT}")
-    # http.server is the standard library's static file server — enough for a
-    # build-step-free frontend, and it keeps the launcher dependency-free.
     dashboard = subprocess.Popen(
-        [str(py), "-m", "http.server", str(DASH_PORT),
-         "--bind", "127.0.0.1", "--directory", str(FRONTEND)],
-        env=CHILD_ENV,
+        [npm, "run", "dev", "--", "--host", "127.0.0.1",
+         "--port", str(DASH_PORT), "--strictPort"],
+        cwd=FRONTEND, env=CHILD_ENV,
     )
-    return [api, dashboard]
+    processes = [api, dashboard]
+    env_text = (WEEK2 / ".env").read_text(
+        encoding="utf-8", errors="ignore",
+    ) if (WEEK2 / ".env").exists() else ""
+    broker_is_kite = any(
+        line.strip().lower() == "broker=kite"
+        for line in env_text.splitlines()
+    ) or os.environ.get("BROKER", "").lower() == "kite"
+    if broker_is_kite:
+        say("starting the Kite gateway     ->  live quotes + order updates")
+        processes.append(subprocess.Popen(
+            [str(py), "manage.py", "run_market_gateway"],
+            cwd=WEEK2, env=CHILD_ENV,
+        ))
+    return processes
 
 
 def supervise(procs: list[subprocess.Popen]) -> int:
     """Block until Ctrl+C or a server dies; then shut everything down cleanly."""
     try:
         while True:
-            for proc in procs:
+            names = ["Django API", "Vite dashboard", "Kite gateway"]
+            for index, proc in enumerate(procs):
                 code = proc.poll()
                 if code is not None:
-                    return fail(f"a server exited unexpectedly (code {code}). "
-                                f"The most common cause is a port already in "
-                                f"use ({API_PORT} or {DASH_PORT}).")
+                    name = names[index] if index < len(names) else "child process"
+                    return fail(
+                        f"{name} exited unexpectedly (code {code}). "
+                        "The process output immediately above contains the "
+                        "specific cause."
+                    )
             time.sleep(0.5)
     except KeyboardInterrupt:
         say("shutting down (Ctrl+C) ...")
@@ -262,6 +318,16 @@ def main() -> int:
     if not WEEK2.exists():
         return fail(f"expected the backend at {WEEK2} — run this from the repo root.")
 
+    busy = ports_in_use(API_PORT, DASH_PORT)
+    if busy:
+        joined = ", ".join(str(port) for port in busy)
+        return fail(
+            f"cannot start because localhost port(s) {joined} are already in "
+            "use. Stop the older FinPilot/dev server and run this command "
+            "again. On Windows, identify it with: "
+            f"Get-NetTCPConnection -State Listen -LocalPort {busy[0]}"
+        )
+
     # 1-3. Environment: virtualenv, dependencies, .env.
     py = ensure_venv()
     if not args.skip_install and not deps_satisfied(py):
@@ -292,10 +358,17 @@ def main() -> int:
             "                `python run.py --refresh --offline`  (synthetic).")
 
     # 5-6. Servers + browser.
-    procs = start_servers(py)
+    try:
+        npm = ensure_frontend_deps()
+    except (RuntimeError, subprocess.CalledProcessError) as e:
+        return fail(f"frontend setup failed ({e}).")
+    procs = start_servers(py, npm)
+    # Verify that both children survived startup before opening a browser or
+    # claiming success. supervise() cleans up the sibling if one failed.
+    time.sleep(1.0)
+    if any(proc.poll() is not None for proc in procs):
+        return supervise(procs)
     if not args.no_browser:
-        # A short pause lets both servers bind their ports before the tab opens.
-        time.sleep(2.0)
         webbrowser.open(f"http://127.0.0.1:{DASH_PORT}")
 
     say("FinPilot is running. Press Ctrl+C to stop.")

@@ -1,7 +1,7 @@
 """Django admin registration for the `portfolio` app."""
 from django.contrib import admin
 
-from .models import JournalEntry, Order, Position
+from .models import ActionReceipt, JournalEntry, MarketQuote, Order, Position
 
 
 @admin.register(Position)
@@ -27,3 +27,20 @@ class JournalEntryAdmin(admin.ModelAdmin):
     list_filter = ("stage", "decision")
     search_fields = ("symbol", "detail")
     readonly_fields = ("created_at",)
+
+
+@admin.register(ActionReceipt)
+class ActionReceiptAdmin(admin.ModelAdmin):
+    list_display = ("action", "key", "status", "created_at", "updated_at")
+    readonly_fields = ("key", "action", "status", "response",
+                       "created_at", "updated_at")
+    search_fields = ("key", "action", "status")
+
+
+@admin.register(MarketQuote)
+class MarketQuoteAdmin(admin.ModelAdmin):
+    list_display = (
+        "stock", "last_price", "instrument_token", "exchange_timestamp",
+        "received_at",
+    )
+    search_fields = ("stock__symbol",)

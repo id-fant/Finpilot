@@ -32,6 +32,15 @@ SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "dev-insecure-key-change-me")
 # WHY compare to the string "True": env vars are always strings.
 DEBUG = os.environ.get("DJANGO_DEBUG", "True") == "True"
 ALLOWED_HOSTS = os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")
+if not DEBUG:
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+    SECURE_SSL_REDIRECT = os.environ.get("SECURE_SSL_REDIRECT", "True") == "True"
+    SECURE_HSTS_SECONDS = int(os.environ.get("SECURE_HSTS_SECONDS", "3600"))
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    SECURE_CONTENT_TYPE_NOSNIFF = True
+    SECURE_REFERRER_POLICY = "same-origin"
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 
 # ── Applications ─────────────────────────────────────────────────────────────
 INSTALLED_APPS = [
@@ -45,6 +54,7 @@ INSTALLED_APPS = [
     "rest_framework",
     "corsheaders",
     "django_celery_beat",
+    "channels",
     # FinPilot apps
     "core",
     "signals",
@@ -63,9 +73,12 @@ MIDDLEWARE = [
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
+if not DEBUG:
+    MIDDLEWARE.insert(2, "whitenoise.middleware.WhiteNoiseMiddleware")
 
 ROOT_URLCONF = "finpilot.urls"
 WSGI_APPLICATION = "finpilot.wsgi.application"
+ASGI_APPLICATION = "finpilot.asgi.application"
 
 TEMPLATES = [
     {
@@ -119,6 +132,13 @@ USE_I18N = True
 USE_TZ = True
 
 STATIC_URL = "static/"
+STATIC_ROOT = BASE_DIR / "staticfiles"
+# The production container copies Vite's output here. WhiteNoise serves those
+# root assets (index.html, /assets, manifest and service worker) on the same
+# origin as the API, eliminating production CORS/CSRF and cache split-brain.
+FRONTEND_DIST = BASE_DIR / "frontend_dist"
+if FRONTEND_DIST.exists():
+    WHITENOISE_ROOT = FRONTEND_DIST
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 # ── Django REST Framework ────────────────────────────────────────────────────
@@ -136,6 +156,26 @@ REST_FRAMEWORK = {
 CORS_ALLOWED_ORIGINS = os.environ.get(
     "CORS_ALLOWED_ORIGINS", "http://localhost:5500,http://127.0.0.1:5500"
 ).split(",")
+CORS_ALLOW_CREDENTIALS = True
+CSRF_TRUSTED_ORIGINS = os.environ.get(
+    "CSRF_TRUSTED_ORIGINS", "http://localhost:5500,http://127.0.0.1:5500"
+).split(",")
+
+# Live dashboard events. Redis is the production channel layer; tests and the
+# one-process demo use the in-memory layer so the UI remains functional without
+# infrastructure. Set CHANNEL_REDIS_URL alongside Celery's Redis URL in prod.
+CHANNEL_REDIS_URL = os.environ.get("CHANNEL_REDIS_URL", "")
+if CHANNEL_REDIS_URL:
+    CHANNEL_LAYERS = {
+        "default": {
+            "BACKEND": "channels_redis.core.RedisChannelLayer",
+            "CONFIG": {"hosts": [CHANNEL_REDIS_URL]},
+        }
+    }
+else:
+    CHANNEL_LAYERS = {
+        "default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}
+    }
 
 # ── Celery ───────────────────────────────────────────────────────────────────
 # WHY Redis as broker: simplest broker to run in dev and prod. The web process
@@ -204,6 +244,20 @@ ANALYST_GATE = os.environ.get("ANALYST_GATE", "auto").lower()
 # (stored in the model's meta JSON, picked on out-of-sample data).
 ML_GATE = os.environ.get("ML_GATE", "auto").lower()
 ML_GATE_THRESHOLD = float(os.environ.get("ML_GATE_THRESHOLD", "0"))
+
+# ── Quantitative trade controls ──────────────────────────────────────────────
+# These controls reduce or skip risk; none of them can increase a trade beyond
+# BROKER_MAX_TRADE_VALUE. Missing history/model inputs fail open.
+TREND_FILTER = os.environ.get("TREND_FILTER", "auto").lower()
+EV_GATE = os.environ.get("EV_GATE", "auto").lower()
+EV_MIN_EDGE = float(os.environ.get("EV_MIN_EDGE", "0.002"))
+VOL_TARGET = float(os.environ.get("VOL_TARGET", "0.15"))
+VOL_HALFLIFE = int(os.environ.get("VOL_HALFLIFE", "20"))
+KELLY_FRACTION = float(os.environ.get("KELLY_FRACTION", "0.25"))
+KELLY_MAX_CAPITAL_FRACTION = float(
+    os.environ.get("KELLY_MAX_CAPITAL_FRACTION", "0.05")
+)
+RISK_CAPITAL = float(os.environ.get("RISK_CAPITAL", str(PAPER_STARTING_CASH)))
 
 # ── Dashboard actions (POST /api/signals/refresh/, /api/portfolio/execute-orders/) ──
 # In DEBUG the buttons just work. Deployed, a request must send

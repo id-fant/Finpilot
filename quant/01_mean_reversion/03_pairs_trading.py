@@ -22,6 +22,8 @@ Run:  python 03_pairs_trading.py
 from __future__ import annotations
 
 from itertools import combinations
+from pathlib import Path
+import sys
 from typing import cast
 
 import numpy as np
@@ -30,6 +32,12 @@ import yfinance as yf
 import matplotlib.pyplot as plt
 import statsmodels.api as sm
 from statsmodels.tsa.stattools import coint
+
+WEEK2 = Path(__file__).resolve().parents[2] / "week2"
+if str(WEEK2) not in sys.path:
+    sys.path.insert(0, str(WEEK2))
+
+from core.quant_math import kalman_hedge_ratio, mean_reversion_half_life
 
 WINDOW = 30   # rolling window for the z-score
 ENTRY = 2.0   # open a position once |z| exceeds this
@@ -105,17 +113,27 @@ if __name__ == "__main__":
     # See 02_cointegration.py for the same pattern.
     y = cast("pd.Series", prices[y_sym])  # pyrefly: ignore[redundant-cast]
     x = cast("pd.Series", prices[x_sym])  # pyrefly: ignore[redundant-cast]
-    beta = hedge_ratio(y, x)
-    spread = y - beta * x
-    z = (spread - spread.rolling(WINDOW).mean()) / spread.rolling(WINDOW).std()
+    static_beta = hedge_ratio(y, x)
+    dynamic_beta = kalman_hedge_ratio(y, x)
+    spread = y - dynamic_beta * x
+    half_life = mean_reversion_half_life(spread)
+    adaptive_window = (
+        int(np.clip(round(half_life), 10, 120))
+        if half_life is not None else WINDOW
+    )
+    z = (
+        (spread - spread.rolling(adaptive_window).mean())
+        / spread.rolling(adaptive_window).std()
+    )
 
     positions = generate_positions(z.fillna(0))
 
     # Market-neutral return: long y, short beta*x, normalised by gross exposure.
     # positions.shift(1) — you trade on yesterday's signal, never today's close.
     ret_y, ret_x = y.pct_change(), x.pct_change()
-    gross = 1 + abs(beta)
-    spread_return = (ret_y - beta * ret_x) / gross
+    beta_lag = dynamic_beta.shift(1).fillna(static_beta)
+    gross = 1 + beta_lag.abs()
+    spread_return = (ret_y - beta_lag * ret_x) / gross
     strategy_return = positions.shift(1).fillna(0) * spread_return
     equity = (1 + strategy_return).cumprod()
 
@@ -127,7 +145,12 @@ if __name__ == "__main__":
     total = (equity.iloc[-1] - 1) * 100
     sharpe = daily.mean() / daily.std() * np.sqrt(252) if daily.std() else 0.0
 
-    print(f"\n  hedge ratio        : {beta:.3f}")
+    print(f"\n  static hedge ratio : {static_beta:.3f}")
+    print(f"  latest Kalman ratio: {dynamic_beta.iloc[-1]:.3f}")
+    print(f"  spread half-life   : "
+          f"{half_life:.1f} bars" if half_life is not None
+          else "  spread half-life   : not mean-reverting")
+    print(f"  z-score window     : {adaptive_window} bars")
     print(f"  position changes   : {trades}")
     print(f"  total return       : {total:+.2f}%")
     print(f"  annualised Sharpe  : {sharpe:.2f}")
