@@ -97,3 +97,13 @@ logs/
 # ── Meta-labeling artifacts (rebuild: quant/04_meta_labeling scripts 01→02) ──
 quant/04_meta_labeling/data/
 quant/04_meta_labeling/model/
+
+# ── Node / Vite ──
+# node_modules is rebuilt from package-lock.json by `npm ci` — never commit it
+# (it was ~2,165 tracked files, 93% of the repo). The LOCKFILE is what makes
+# installs reproducible, and it stays tracked; the Dockerfile depends on it.
+node_modules/
+# Vite's dep pre-bundle cache. It rewrites `deps_temp_<hash>/` on every dev
+# server start, so tracking it produces endless add/delete churn in git.
+.vite/
+week4/frontend/dist/
