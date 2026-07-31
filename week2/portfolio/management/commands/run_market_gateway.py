@@ -14,7 +14,13 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         try:
-            from kiteconnect import KiteConnect, KiteTicker
+            # kiteconnect is an OPTIONAL live-trading dependency — CI and the
+            # paper-broker default never install it, so pyright cannot resolve
+            # the import. pyrefly covers it via `replace-imports-with-any` in
+            # pyrefly.toml; the guard below is the real runtime contract.
+            from kiteconnect import (  # pyright: ignore[reportMissingImports]
+                KiteConnect, KiteTicker,
+            )
         except ImportError as exc:
             raise CommandError("kiteconnect is not installed") from exc
 

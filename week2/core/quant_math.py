@@ -9,6 +9,7 @@ from __future__ import annotations
 from itertools import combinations
 from math import e, log, sqrt
 from statistics import NormalDist
+from typing import cast
 
 import numpy as np
 import pandas as pd
@@ -83,8 +84,12 @@ def trend_regime(
             "relative_momentum": None,
         }
 
-    fast = prices.rolling(fast_window).mean()
-    slow = prices.rolling(slow_window).mean()
+    # pandas stubs union `rolling().mean()` as `Series | ndarray`; on a Series
+    # input it is always a Series at runtime (only a Series has .iloc).
+    # Pyrefly narrows it and calls the cast redundant; Pyright needs it —
+    # the documented two-checker disagreement (LEARNINGS #68a).
+    fast = cast("pd.Series", prices.rolling(fast_window).mean())  # pyrefly: ignore[redundant-cast]
+    slow = cast("pd.Series", prices.rolling(slow_window).mean())  # pyrefly: ignore[redundant-cast]
     slow_now = float(slow.iloc[-1])
     slow_then = float(slow.iloc[-1 - slope_window])
     asset_momentum = float(prices.iloc[-1] / prices.iloc[-1 - fast_window] - 1)

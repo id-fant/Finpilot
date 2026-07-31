@@ -22,6 +22,8 @@ a much easier, better-posed problem than forecasting returns.
 """
 from __future__ import annotations
 
+from typing import cast
+
 import pandas as pd
 
 from core.strategy import (
@@ -57,8 +59,12 @@ def enrich_features(df: pd.DataFrame) -> pd.DataFrame:
     # 1 = upper). Guard the zero-width squeeze case.
     ind["bb_pctb"] = (close - ind["bb_lower"]) / band_width.replace(0, pd.NA)
 
-    sma200 = close.rolling(200).mean()
-    sma50 = close.rolling(50).mean()
+    # pandas stubs union `rolling().mean()` as `Series | ndarray`; on a Series
+    # input it is always a Series at runtime (and only a Series has .shift).
+    # Pyrefly narrows this correctly and calls the cast redundant; Pyright
+    # needs it — the documented two-checker disagreement (LEARNINGS #68a).
+    sma200 = cast("pd.Series", close.rolling(200).mean())  # pyrefly: ignore[redundant-cast]
+    sma50 = cast("pd.Series", close.rolling(50).mean())  # pyrefly: ignore[redundant-cast]
     ind["dist_sma200"] = close / sma200 - 1
     ind["trend_ok"] = (
         (close > sma200)
@@ -107,7 +113,9 @@ def vectorized_votes(ind: pd.DataFrame) -> pd.DataFrame:
 
     # Train on the same long-term trend regime accepted by live generation.
     # Warm-up rows are False here and are skipped by the dataset builder.
-    trend_warmed_up = ind["Close"].rolling(200).mean().shift(20).notna()
+    # Same stub union as above — pin to Series so `.shift` resolves.
+    _sma200 = cast("pd.Series", ind["Close"].rolling(200).mean())  # pyrefly: ignore[redundant-cast]
+    trend_warmed_up = _sma200.shift(20).notna()
     trend_eligible = ind["trend_ok"] | ~trend_warmed_up
     buy = (
         (ind["buy_votes"] >= 2)
